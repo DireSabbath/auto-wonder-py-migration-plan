@@ -17,6 +17,7 @@ from autowonder.environments.router import router as environment_router
 from autowonder.repos.router import router as repo_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.squads.router import router as squad_router
+from autowonder.statemachines.router import router as status_template_router
 from autowonder.templates.router import router as template_router
 from autowonder.workspaces.router import router as workspace_router
 
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
     app.include_router(workspace_router)
     app.include_router(squad_router)
     app.include_router(sdlc_router)
+    app.include_router(status_template_router)
     app.include_router(template_router)
     app.include_router(environment_router)
     app.include_router(repo_router)
