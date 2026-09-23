@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     s3_region: str = Field(default="us-east-1", validation_alias="S3_REGION")
     s3_access_key_id: str = Field(default="", validation_alias="S3_ACCESS_KEY_ID")
     s3_access_key_secret: str = Field(default="", validation_alias="S3_ACCESS_KEY_SECRET")
+    s3_force_path_style: bool = Field(default=True, validation_alias="S3_FORCE_PATH_STYLE")
     oss_enabled: bool = Field(default=True, validation_alias="OSS_ENABLED")
     oss_endpoint: str = Field(default="", validation_alias="OSS_ENDPOINT")
     oss_public_endpoint: str = Field(default="", validation_alias="OSS_PUBLIC_ENDPOINT")

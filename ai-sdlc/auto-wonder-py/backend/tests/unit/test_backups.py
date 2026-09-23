@@ -21,7 +21,7 @@ from autowonder.backups.archive import (
 from autowonder.backups.rules import RULES
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.main import create_app
-from autowonder.storage.objects import InMemoryObjectStorage, MapObjectStorage, get_object_storage
+from autowonder.storage.objects import MapObjectStorage
 
 
 def test_backup_rules_keep_the_java_allowlist() -> None:
@@ -54,7 +54,6 @@ def test_bucket_page_and_download_guards() -> None:
     assert select_backup_bucket(" ", " ", "legacy") == "legacy"
     assert page_bounds(-1, 999) == (1, 100)
     assert page_bounds(2, 0) == (2, 1)
-    assert isinstance(get_object_storage(), InMemoryObjectStorage)
     assert BUCKET_MESSAGE.startswith("请先配置持久化对象存储")
     try:
         require_download("FAILED", "bucket/a.zip", True)

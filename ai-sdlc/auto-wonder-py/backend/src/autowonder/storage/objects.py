@@ -14,8 +14,47 @@ class StoredObject:
     size: int
 
 
+_PERMANENT_CONFIGURATION_ERROR_CODES = frozenset(
+    {
+        "NoSuchBucket",
+        "InvalidBucketName",
+        "AccessDenied",
+        "InvalidAccessKeyId",
+        "SignatureDoesNotMatch",
+    }
+)
+
+
 class ObjectStorageError(Exception):
     """对象存储读写失败。品牌 Logo 读取把它变成 502。"""
+
+    def __init__(
+        self,
+        message: str = "",
+        bucket: str | None = None,
+        key: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.bucket = bucket
+        self.key = key
+        self.error_code = error_code
+
+    def is_permanent_configuration_error(self) -> bool:
+        """配置类错误码不应重试。"""
+        return self.error_code in _PERMANENT_CONFIGURATION_ERROR_CODES
+
+    def describe(self) -> str:
+        """拼出错误码、桶和对象键，供调用方写入失败原因。"""
+        if self.error_code is not None and self.error_code.strip() != "":
+            text = self.error_code
+        else:
+            text = "ObjectStorageError"
+        if self.bucket is not None and self.bucket.strip() != "":
+            text = text + " bucket=" + self.bucket
+        if self.key is not None and self.key.strip() != "":
+            text = text + " key=" + self.key
+        return text
 
 
 class ObjectStorage(Protocol):
@@ -29,6 +68,9 @@ class ObjectStorage(Protocol):
 
     def presign_get(self, oss_ref: str, ttl_seconds: int) -> str:
         """生成限时下载地址。"""
+
+    def presign_put(self, bucket: str, key: str, ttl_seconds: int) -> str:
+        """生成限时上传地址。"""
 
     def exists(self, oss_ref: str) -> bool:
         """引用当前是否存在。"""
@@ -56,6 +98,9 @@ class InMemoryObjectStorage:
 
     def presign_get(self, oss_ref: str, ttl_seconds: int) -> str:
         return "mem://" + oss_ref + "?ttl=" + str(ttl_seconds)
+
+    def presign_put(self, bucket: str, key: str, ttl_seconds: int) -> str:
+        return "mem-put://" + bucket + "/" + key + "?ttl=" + str(ttl_seconds)
 
     def exists(self, oss_ref: str) -> bool:
         return oss_ref in self._store
@@ -88,6 +133,9 @@ class MapObjectStorage:
     def presign_get(self, oss_ref: str, ttl_seconds: int) -> str:
         return "mem://" + oss_ref + "?ttl=" + str(ttl_seconds)
 
+    def presign_put(self, bucket: str, key: str, ttl_seconds: int) -> str:
+        return "mem-put://" + bucket + "/" + key + "?ttl=" + str(ttl_seconds)
+
     def exists(self, oss_ref: str) -> bool:
         return oss_ref in self._store
 
@@ -98,9 +146,26 @@ class MapObjectStorage:
 _MEMORY = InMemoryObjectStorage()
 
 
-def get_object_storage() -> ObjectStorage:
-    """尚未接通 OSS/S3 客户端时返回进程内存储。"""
+def memory_storage() -> InMemoryObjectStorage:
+    """两个云后端都关闭时使用的进程内单例。"""
     return _MEMORY
+
+
+def get_object_storage() -> ObjectStorage:
+    """按 ``oss.enabled`` / ``s3.enabled`` 选择客户端。"""
+    from autowonder.storage.factory import build_object_storage
+
+    return build_object_storage()
+
+
+def split_oss_ref(oss_ref: str | None) -> tuple[str, str]:
+    """把 ``{bucket}/{key}`` 从第一个斜杠拆开。任一侧为空时拒绝。"""
+    if oss_ref is None:
+        raise ValueError("bad ossRef: null")
+    index = oss_ref.find("/")
+    if index <= 0 or index == len(oss_ref) - 1:
+        raise ValueError("bad ossRef: " + oss_ref)
+    return oss_ref[:index], oss_ref[index + 1 :]
 
 
 def md5_hex(data: bytes) -> str:
