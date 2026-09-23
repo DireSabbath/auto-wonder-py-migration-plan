@@ -35,3 +35,14 @@ async def selected_provider(session: AsyncSession) -> str:
         select(PlatformImSelection.provider).where(PlatformImSelection.id == 1)
     )
     return resolve_selected_provider(stored)
+
+
+def require_selected_provider(selected: str, provider: str) -> None:
+    """偏好里打开的渠道必须是平台当前选择的那一个。"""
+    if selected != normalize_provider(provider):
+        raise BizError(ErrorCode.PARAM_INVALID, "请使用平台当前选择的 IM 渠道")
+
+
+async def require_selected(session: AsyncSession, provider: str) -> None:
+    """核对平台当前 IM 渠道。"""
+    require_selected_provider(await selected_provider(session), provider)

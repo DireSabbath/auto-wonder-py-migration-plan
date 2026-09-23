@@ -17,6 +17,7 @@ from autowonder.config import get_settings
 from autowonder.core.logging import configure_logging
 from autowonder.environments.router import router as environment_router
 from autowonder.memories.router import router as memory_router
+from autowonder.notifications.router import router as notification_router
 from autowonder.repos.router import router as repo_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.settings.router import router as setting_router
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(category_router)
     app.include_router(clarification_router)
     app.include_router(memory_router)
+    app.include_router(notification_router)
     app.include_router(template_router)
     app.include_router(environment_router)
     app.include_router(repo_router)
