@@ -11,6 +11,7 @@ from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
 from autowonder.api.spa import mount_spa
 from autowonder.auth.router import router as auth_router
+from autowonder.categories.router import router as category_router
 from autowonder.config import get_settings
 from autowonder.core.logging import configure_logging
 from autowonder.environments.router import router as environment_router
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(sdlc_router)
     app.include_router(status_template_router)
     app.include_router(setting_router)
+    app.include_router(category_router)
     app.include_router(template_router)
     app.include_router(environment_router)
     app.include_router(repo_router)
