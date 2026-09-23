@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from autowonder import __version__
+from autowonder.agents.router import router as agent_router
 from autowonder.api.errors import install_exception_handlers
 from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
     app.include_router(meta_router)
     app.include_router(auth_router)
+    app.include_router(agent_router)
     app.include_router(workspace_router)
     app.include_router(squad_router)
     app.include_router(sdlc_router)
