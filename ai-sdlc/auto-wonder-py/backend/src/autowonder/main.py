@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from autowonder import __version__
 from autowonder.agents.router import router as agent_router
+from autowonder.aiusage.router import router as ai_usage_router
 from autowonder.api.errors import install_exception_handlers
 from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(setting_router)
     app.include_router(category_router)
     app.include_router(skill_router)
+    app.include_router(ai_usage_router)
     app.include_router(clarification_router)
     app.include_router(memory_router)
     app.include_router(notification_router)
