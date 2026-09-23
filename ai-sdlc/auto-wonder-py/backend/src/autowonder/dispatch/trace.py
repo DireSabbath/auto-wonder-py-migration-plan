@@ -55,8 +55,10 @@ class TraceSource:
     event_time: datetime | None = None
     gmt_create: datetime | None = None
     detail_json: Any = None
+    step_id: int | None = None
     step_key: str | None = None
     step_name: str | None = None
+    agent_id: int | None = None
     message: str | None = None
     error: str | None = None
 
@@ -194,8 +196,10 @@ def source_from_row(row: DispatchRuntimeEvent) -> TraceSource:
         event_time=row.event_time,
         gmt_create=row.gmt_create,
         detail_json=row.detail_json,
+        step_id=row.step_id,
         step_key=row.step_key,
         step_name=row.step_name,
+        agent_id=row.agent_id,
         message=row.message,
         error=row.error,
     )

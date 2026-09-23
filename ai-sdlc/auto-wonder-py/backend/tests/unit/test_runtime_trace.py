@@ -874,8 +874,8 @@ def test_event_queries_follow_java_order() -> None:
     assert "artifact.id DESC" in artifact_sql
 
 
-def test_runtime_trace_routes_require_login_and_skip_live_activity() -> None:
-    """轨迹读取已注册。实时活动还没有对应服务，所以不暴露。"""
+def test_runtime_trace_and_live_activity_routes_require_login() -> None:
+    """轨迹和实时活动都已注册。未登录时返回 401。"""
     client = TestClient(create_app())
     paths = client.app.openapi()["paths"]
     assert "get" in paths["/api/dispatches/{id}/runtime-trace"]
@@ -885,12 +885,15 @@ def test_runtime_trace_routes_require_login_and_skip_live_activity() -> None:
     observation = "/api/dispatches/{id}/runtime-trace/observations/{observationId}"
     assert "get" in paths[observation]
     assert "get" in paths["/api/dispatches/{id}/runtime-trace/context"]
-    assert "/api/dispatches/{id}/live-activity" not in paths
+    assert "get" in paths["/api/dispatches/{id}/live-activity"]
     response = client.get("/api/dispatches/44/runtime-trace")
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
     activities = client.get("/api/dispatches/44/runtime-trace/activities")
     assert activities.status_code == 401
+    live = client.get("/api/dispatches/44/live-activity")
+    assert live.status_code == 401
+    assert live.json()["code"] == "10401"
 
 
 def test_illegal_argument_returns_param_invalid_with_http_200() -> None:

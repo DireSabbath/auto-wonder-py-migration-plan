@@ -10,6 +10,7 @@ from autowonder.core.context import current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.db.session import get_session
+from autowonder.dispatch.live import load_live_activity
 from autowonder.dispatch.query import get_dispatch, list_dispatches
 from autowonder.dispatch.trace import choose_published_trace, load_activities, load_projected_trace
 from autowonder.dispatch.trace_artifact import (
@@ -138,3 +139,14 @@ async def get_runtime_context(
         media_type="application/octet-stream",
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
+
+@trace_router.get("/{id}/live-activity")
+async def get_live_activity(
+    id: int,
+    afterSeq: Annotated[int | None, Query(alias="afterSeq")] = None,
+    limit: Annotated[int | None, Query()] = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """按允许名单返回一条调度的实时活动。"""
+    return ok(await load_live_activity(session, _workspace_id(), id, afterSeq, limit))

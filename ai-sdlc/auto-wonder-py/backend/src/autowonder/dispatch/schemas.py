@@ -203,3 +203,41 @@ class RuntimeActivityTimeline(ApiModel):
 
     dispatch_id: int | None = None
     activities: list[RuntimeActivity] = Field(default_factory=list)
+
+
+class LiveAction(ApiModel):
+    """浏览器可见的一条实时动作。摘要已经脱敏并限长。"""
+
+    event_id: str | None = None
+    seq: int | None = None
+    event_time: str | None = None
+    event_type: str | None = None
+    action_type: str | None = None
+    summary: str | None = None
+    status: str | None = None
+    step_id: int | None = None
+    step_key: str | None = None
+    step_name: str | None = None
+    agent_id: int | None = None
+    dispatch_id: int | None = None
+    attempt: int | None = None
+
+
+class LiveActivity(ApiModel):
+    """一次调度的实时活动。动作按新到旧排列，原始日志不出现。"""
+
+    schema_version: str = "1"
+    dispatch_id: int | None = None
+    agent_id: int | None = None
+    workitem_id: int | None = None
+    source_type: str | None = None
+    attempt: int | None = None
+    dispatch_status: str | None = None
+    changed: bool = True
+    last_seq: int | None = None
+    last_updated_at: str | None = None
+    current_action: LiveAction | None = None
+    actions: list[LiveAction] = Field(default_factory=list)
+    total_actions: int = 0
+    truncated: bool = False
+    awaiting_runtime: bool = False
