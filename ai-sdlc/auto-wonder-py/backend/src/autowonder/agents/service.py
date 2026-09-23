@@ -955,7 +955,10 @@ async def attach_reviewed_memory(
     tenant_id: int,
     user_id: int,
 ) -> None:
-    """把已采纳记忆挂到在线员工。草稿会因此送审。员工不存在时安静返回。"""
+    """把已采纳记忆挂到在线员工。草稿会因此送审。
+
+    员工不存在时安静返回。写入留在调用方的事务里，和记忆审核一起提交。
+    """
     try:
         agent = await _lock_in_tenant(session, agent_id, tenant_id)
     except BizError:
@@ -977,7 +980,6 @@ async def attach_reviewed_memory(
         )
         await session.flush()
     if target.status != "DRAFT":
-        await session.commit()
         return
     updated = await _update_version_status(
         session,
@@ -1004,7 +1006,6 @@ async def attach_reviewed_memory(
         user_id,
     )
     _require_updated(updated)
-    await session.commit()
 
 
 def _require_updated(updated: int) -> None:
