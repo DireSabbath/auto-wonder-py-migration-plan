@@ -1,0 +1,121 @@
+[project]
+name = "auto-wonder"
+version = "0.1.0"
+description = "AutoWonder Python server, a 1:1 migration of the Java service."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aioboto3>=13",
+    "alembic>=1.14",
+    "apscheduler>=3.10,<4",
+    "asyncmy>=0.2.10",
+    "bcrypt>=4.2",
+    "cryptography>=44",
+    "fastapi>=0.115,<0.116",
+    "httpx>=0.28",
+    "oss2>=2.19",
+    "pydantic-settings>=2.6",
+    "pyjwt>=2.10",
+    "python-multipart>=0.0.18",
+    "pyyaml>=6.0.3",
+    "redis>=5.2,<5.3",
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "uvicorn[standard]>=0.32,<0.33",
+]
+
+[project.scripts]
+autowonder-serve = "autowonder.main:serve"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autowonder"
+module-root = "src"
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+src = ["src", "tests", "scripts", "verify"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/autowonder/**/models.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["autowonder"]
+mypy_path = "src"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_packages = ["autowonder"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Cross-cutting modules stay below business domains"
+type = "forbidden"
+source_modules = [
+    "autowonder.core",
+    "autowonder.db",
+    "autowonder.security",
+]
+forbidden_modules = [
+    "autowonder.platform",
+    "autowonder.auth",
+    "autowonder.users",
+    "autowonder.workspaces",
+    "autowonder.agents",
+    "autowonder.squads",
+    "autowonder.sdlcs",
+    "autowonder.statemachines",
+    "autowonder.skills",
+    "autowonder.memories",
+    "autowonder.repos",
+    "autowonder.environments",
+    "autowonder.categories",
+    "autowonder.templates",
+    "autowonder.guidance",
+    "autowonder.settings",
+    "autowonder.taskpackages",
+    "autowonder.workitems",
+    "autowonder.clarifications",
+    "autowonder.notifications",
+    "autowonder.debuglogs",
+    "autowonder.aiusage",
+    "autowonder.insights",
+    "autowonder.dashboards",
+    "autowonder.audits",
+    "autowonder.storage",
+    "autowonder.artifacts",
+    "autowonder.ai",
+    "autowonder.executors",
+    "autowonder.ws",
+    "autowonder.dispatch",
+    "autowonder.conversations",
+    "autowonder.scheduledtasks",
+    "autowonder.mcp",
+    "autowonder.im",
+    "autowonder.integrations",
+    "autowonder.evolution",
+    "autowonder.backups",
+    "autowonder.jobs",
+]
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.1",
+    "mypy>=1.13",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]

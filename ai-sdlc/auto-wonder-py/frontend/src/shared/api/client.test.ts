@@ -1,0 +1,692 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { http, HttpResponse } from 'msw';
+import { server } from '@/test/mocks/server';
+import { apiClient } from './client';
+import { ApiError } from '@/shared/types/common';
+import { useAuthStore } from '@/shared/auth/store';
+
+describe('apiClient', () => {
+  beforeEach(() => {
+    useAuthStore.getState().clear();
+    server.resetHandlers();
+  });
+
+  it('unwraps successful response envelope to data', async () => {
+    server.use(
+      http.get('/api/test', () => {
+        return HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          data: { value: 42 },
+          traceId: 'trace-1',
+        });
+      }),
+    );
+
+    const result = await apiClient.get<{ value: number }>('/api/test');
+    expect(result.data).toEqual({ value: 42 });
+  });
+
+  it('throws ApiError on business failure', async () => {
+    server.use(
+      http.get('/api/test-fail', () => {
+        return HttpResponse.json({
+          success: false,
+          code: '13003',
+          message: '工单不存在',
+          data: null,
+          traceId: 'trace-2',
+        });
+      }),
+    );
+
+    try {
+      await apiClient.get('/api/test-fail');
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ApiError);
+      const err = e as ApiError;
+      expect(err.code).toBe('13003');
+      expect(err.message).toBe('工单不存在');
+      expect(err.traceId).toBe('trace-2');
+    }
+  });
+
+  it('unwraps list response even when a string field embeds a big integer', async () => {
+    // Reproduces the workitems list render failure: a workitem's contentMd contains
+    // escaped JSON whose values include a 19-digit checkpointSeq. The big-int guard must
+    // not corrupt digits that live inside string values.
+    const contentMd =
+      '数据渲染失败示例 {"checkpointSeq": 1784292150410807000, "ok": true}';
+    server.use(
+      http.get('/api/workitems', () => {
+        return HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          data: [{ id: 11773, title: '审计日志页面的数据渲染失败', contentMd }],
+          traceId: null,
+        });
+      }),
+    );
+
+    const result = await apiClient.get<Array<{ id: number; contentMd: string }>>('/api/workitems');
+    expect(Array.isArray(result.data)).toBe(true);
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].id).toBe(11773);
+    expect(result.data[0].contentMd).toBe(contentMd);
+  });
+
+  it('preserves genuine big-integer number values as strings', async () => {
+    server.use(
+      http.get('/api/seq', () => {
+        return HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          data: { checkpointSeq: 1784292150410807000, small: 42 },
+          traceId: null,
+        });
+      }),
+    );
+
+    const result = await apiClient.get<{ checkpointSeq: unknown; small: number }>('/api/seq');
+    expect(result.data.checkpointSeq).toBe('1784292150410807000');
+    expect(result.data.small).toBe(42);
+  });
+
+  it('injects Authorization header when token present', async () => {
+    let capturedAuth = '';
+    server.use(
+      http.get('/api/protected', ({ request }) => {
+        capturedAuth = request.headers.get('Authorization') || '';
+        return HttpResponse.json({ success: true, code: '0', message: '', data: null, traceId: null });
+      }),
+    );
+
+    const { useAuthStore } = await import('@/shared/auth/store');
+    useAuthStore.getState().setTokens('my-access-token', 'my-refresh');
+
+    await apiClient.get('/api/protected');
+    expect(capturedAuth).toBe('Bearer my-access-token');
+
+    useAuthStore.getState().clear();
+  });
+
+  it('preserves a 403 message, refreshes membership, and does not log out or retry', async () => {
+    let mutationCalls = 0;
+    let membershipCalls = 0;
+    useAuthStore.getState().setTokens('still-valid', 'refresh-token');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 7, name: 'Workspace', description: '' },
+      'ADMIN',
+    );
+    server.use(
+      http.put('/api/protected-write', () => {
+        mutationCalls += 1;
+        return HttpResponse.json({
+          success: false,
+          code: '10403',
+          message: '当前权限不足，编辑工单需要读写权限',
+          data: null,
+          traceId: 'trace-denied',
+        }, { status: 403 });
+      }),
+      http.get('/api/workspaces/current/membership', () => {
+        membershipCalls += 1;
+        return HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          data: { accessLevel: 'READ_ONLY' },
+          traceId: null,
+        });
+      }),
+    );
+
+    await expect(apiClient.put('/api/protected-write', {})).rejects.toMatchObject({
+      code: '10403',
+      message: '当前权限不足，编辑工单需要读写权限',
+      traceId: 'trace-denied',
+    });
+
+    expect(mutationCalls).toBe(1);
+    expect(membershipCalls).toBe(1);
+    expect(useAuthStore.getState().accessToken).toBe('still-valid');
+    expect(useAuthStore.getState().accessLevel).toBe('READ_ONLY');
+    useAuthStore.getState().clear();
+  });
+
+  it('refreshes membership after an workspace access-level denial', async () => {
+    let membershipCalls = 0;
+    useAuthStore.getState().setTokens('still-valid', 'refresh-token');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 7, name: 'Workspace', description: '' },
+      'ADMIN',
+    );
+    server.use(
+      http.put('/api/protected-write', () => HttpResponse.json({
+        success: false,
+        code: '12008',
+        message: '当前为只读权限，编辑工单需要读写权限',
+        data: {
+          current: 'READ_ONLY',
+          required: 'READ_WRITE',
+          action: '编辑工单',
+        },
+        traceId: 'trace-access-denied',
+      }, { status: 403 })),
+      http.get('/api/workspaces/current/membership', () => {
+        membershipCalls += 1;
+        return HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          data: { accessLevel: 'READ_ONLY' },
+          traceId: null,
+        });
+      }),
+    );
+
+    await expect(apiClient.put('/api/protected-write', {})).rejects.toMatchObject({
+      code: '12008',
+      message: '当前为只读权限，编辑工单需要读写权限',
+      traceId: 'trace-access-denied',
+    });
+
+    expect(membershipCalls).toBe(1);
+    expect(useAuthStore.getState().accessToken).toBe('still-valid');
+    expect(useAuthStore.getState().accessLevel).toBe('READ_ONLY');
+    useAuthStore.getState().clear();
+  });
+
+  it('clears a removed member workspace immediately after a normal API response', async () => {
+    let membershipCalls = 0;
+    useAuthStore.getState().setTokens('still-valid', 'refresh-token');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 7, name: 'Removed Workspace', description: '' },
+      'ADMIN',
+    );
+    server.use(
+      http.get('/api/protected-read', () => HttpResponse.json({
+        success: false,
+        code: '11001',
+        message: '当前用户不是该工作空间成员',
+        data: null,
+        traceId: 'trace-removed',
+      }, { status: 403 })),
+      http.get('/api/workspaces/current/membership', () => {
+        membershipCalls += 1;
+        return HttpResponse.json({
+          success: false,
+          code: '11001',
+          message: '当前用户不是该工作空间成员',
+          data: null,
+          traceId: null,
+        }, { status: 403 });
+      }),
+    );
+
+    await expect(apiClient.get('/api/protected-read')).rejects.toMatchObject({
+      code: '11001',
+      traceId: 'trace-removed',
+    });
+
+    expect(membershipCalls).toBe(1);
+    expect(useAuthStore.getState().currentWorkspace).toBeNull();
+    expect(useAuthStore.getState().accessLevel).toBeNull();
+    expect(useAuthStore.getState().accessToken).toBe('still-valid');
+    useAuthStore.getState().clear();
+  });
+
+  it('keeps the current workspace when switching to an unrelated workspace is denied', async () => {
+    let membershipCalls = 0;
+    useAuthStore.getState().setTokens('still-valid', 'refresh-token');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 7, name: 'Current Workspace', description: '' },
+      'READ_WRITE',
+    );
+    server.use(
+      http.post('/api/workspaces/99/switch', () => HttpResponse.json({
+        success: false,
+        code: '11001',
+        message: '当前用户不是该工作空间成员',
+        data: null,
+        traceId: 'trace-switch-denied',
+      }, { status: 403 })),
+      http.get('/api/workspaces/current/membership', () => {
+        membershipCalls += 1;
+        return HttpResponse.json({
+          success: true,
+          code: '0',
+          message: '',
+          data: { accessLevel: 'READ_WRITE' },
+          traceId: null,
+        });
+      }),
+    );
+
+    await expect(apiClient.post('/api/workspaces/99/switch')).rejects.toMatchObject({
+      code: '11001',
+      traceId: 'trace-switch-denied',
+    });
+
+    expect(membershipCalls).toBe(1);
+    expect(useAuthStore.getState().currentWorkspace?.id).toBe(7);
+    expect(useAuthStore.getState().accessLevel).toBe('READ_WRITE');
+    useAuthStore.getState().clear();
+  });
+
+  // F6.3. Unlike 11001/10403/12008, a deleted-or-disabled workspace is not a membership
+  // question: re-reading membership would just get rejected by the same AuthFilter check.
+  function useDeletedWorkspaceHandler(url: string, status?: number) {
+    let membershipCalls = 0;
+    server.use(
+      http.get(url, () => HttpResponse.json({
+        success: false,
+        code: '11005',
+        message: '工作空间已删除或已停用',
+        data: null,
+        traceId: 'trace-deleted',
+      }, status ? { status } : undefined)),
+      http.get('/api/workspaces/current/membership', () => {
+        membershipCalls += 1;
+        return HttpResponse.json({
+          success: true, code: '0', message: '', data: { accessLevel: 'ADMIN' }, traceId: null,
+        });
+      }),
+    );
+    return () => membershipCalls;
+  }
+
+  function bindWorkspace() {
+    useAuthStore.getState().setTokens('still-valid', 'refresh-token');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 7, name: 'Deleted Workspace', description: '' },
+      'ADMIN',
+    );
+  }
+
+  it('drops the workspace binding on a 403 without re-reading membership', async () => {
+    bindWorkspace();
+    const membershipCalls = useDeletedWorkspaceHandler('/api/protected-read', 403);
+    // Already on the select page: the redirect guard must not navigate again.
+    window.history.replaceState({}, '', '/workspaces');
+
+    await expect(apiClient.get('/api/protected-read')).rejects.toMatchObject({
+      code: '11005',
+      traceId: 'trace-deleted',
+    });
+
+    expect(membershipCalls()).toBe(0);
+    expect(useAuthStore.getState().currentWorkspace).toBeNull();
+    expect(useAuthStore.getState().accessLevel).toBeNull();
+    // The token stays: clearing it would send the user to /login instead of to the
+    // workspace select page, and /api/workspaces/mine is exempt from the workspace check.
+    expect(useAuthStore.getState().accessToken).toBe('still-valid');
+    expect(useAuthStore.getState().refreshToken).toBe('refresh-token');
+    expect(window.location.pathname).toBe('/workspaces');
+    window.history.replaceState({}, '', '/');
+    useAuthStore.getState().clear();
+  });
+
+  it('drops the workspace binding when the failure arrives in a 200 envelope', async () => {
+    bindWorkspace();
+    const membershipCalls = useDeletedWorkspaceHandler('/api/protected-read');
+    window.history.replaceState({}, '', '/workspaces');
+
+    await expect(apiClient.get('/api/protected-read')).rejects.toMatchObject({ code: '11005' });
+
+    expect(membershipCalls()).toBe(0);
+    expect(useAuthStore.getState().currentWorkspace).toBeNull();
+    expect(useAuthStore.getState().accessLevel).toBeNull();
+    window.history.replaceState({}, '', '/');
+    useAuthStore.getState().clear();
+  });
+
+  it('sends the user back to the workspace select page from any other route', async () => {
+    bindWorkspace();
+    useDeletedWorkspaceHandler('/api/protected-read', 403);
+    window.history.replaceState({}, '', '/workitems');
+
+    await expect(apiClient.get('/api/protected-read')).rejects.toMatchObject({ code: '11005' });
+
+    expect(useAuthStore.getState().currentWorkspace).toBeNull();
+    // jsdom refuses real navigation, so the observable half is that the guard did not
+    // early-return: pathname is still the pre-failure route rather than /workspaces.
+    expect(window.location.pathname).toBe('/workitems');
+    window.history.replaceState({}, '', '/');
+    useAuthStore.getState().clear();
+  });
+
+  it('stops re-declaring a deleted workspace on the next silent refresh', async () => {
+    let refreshBody: Record<string, unknown> | null = null;
+    bindWorkspace();
+    // Three phases on one endpoint: deleted -> expired -> replayed with the fresh token.
+    // A 401 alone never touches the workspace binding, so the 11005 has to land first for
+    // the refresh that follows to observe an already-cleared currentWorkspace.
+    let phase = 0;
+    server.use(
+      http.get('/api/protected-read', ({ request }) => {
+        if (request.headers.get('Authorization') === 'Bearer refreshed-access') {
+          return HttpResponse.json({
+            success: true, code: '0', message: '', data: { ok: true }, traceId: null,
+          });
+        }
+        phase += 1;
+        if (phase === 1) {
+          return HttpResponse.json({
+            success: false, code: '11005', message: '工作空间已删除或已停用',
+            data: null, traceId: 'trace-deleted',
+          }, { status: 403 });
+        }
+        return HttpResponse.json({
+          success: false, code: '10401', message: '未登录或登录已失效',
+          data: null, traceId: null,
+        }, { status: 401 });
+      }),
+      http.post('/api/auth/refresh', async ({ request }) => {
+        refreshBody = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: 'refreshed-access' }, traceId: null,
+        });
+      }),
+    );
+    window.history.replaceState({}, '', '/workspaces');
+
+    await expect(apiClient.get('/api/protected-read')).rejects.toMatchObject({ code: '11005' });
+    expect(useAuthStore.getState().currentWorkspace).toBeNull();
+
+    await apiClient.get('/api/protected-read');
+
+    // The dead workspaceId must not be resurrected as a claim on the replacement token.
+    expect(refreshBody).toMatchObject({ refreshToken: 'refresh-token', workspaceId: null });
+    expect(useAuthStore.getState().accessToken).toBe('refreshed-access');
+    window.history.replaceState({}, '', '/');
+    useAuthStore.getState().clear();
+  });
+
+  it('on 401, silently refreshes token and replays the original request', async () => {
+    let protectedCalls = 0;
+    let refreshCalls = 0;
+    useAuthStore.getState().setTokens('expired-access', 'valid-refresh');
+
+    server.use(
+      http.get('/api/data', ({ request }) => {
+        protectedCalls += 1;
+        const auth = request.headers.get('Authorization');
+        if (auth === 'Bearer new-access-token') {
+          return HttpResponse.json({
+            success: true, code: '0', message: '', data: { ok: true }, traceId: null,
+          });
+        }
+        return HttpResponse.json({
+          success: false, code: '10401', message: '未登录或登录已失效',
+          data: null, traceId: 'trace-expired',
+        }, { status: 401 });
+      }),
+      http.post('/api/auth/refresh', () => {
+        refreshCalls += 1;
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: 'new-access-token' }, traceId: null,
+        });
+      }),
+    );
+
+    const result = await apiClient.get<{ ok: boolean }>('/api/data');
+    expect(result.data).toEqual({ ok: true });
+    expect(protectedCalls).toBe(2);
+    expect(refreshCalls).toBe(1);
+    expect(useAuthStore.getState().accessToken).toBe('new-access-token');
+    useAuthStore.getState().clear();
+  });
+
+  it('re-declares the current workspace when silently refreshing the token', async () => {
+    let refreshBody: Record<string, unknown> | null = null;
+    useAuthStore.getState().setTokens('expired-access', 'valid-refresh');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 10002, name: 'AutoWonder', description: '' },
+      'READ_WRITE',
+    );
+
+    server.use(
+      http.get('/api/data', ({ request }) => {
+        if (request.headers.get('Authorization') === 'Bearer refreshed-access') {
+          return HttpResponse.json({
+            success: true, code: '0', message: '', data: { ok: true }, traceId: null,
+          });
+        }
+        return HttpResponse.json({
+          success: false, code: '10401', message: '未登录或登录已失效',
+          data: null, traceId: null,
+        }, { status: 401 });
+      }),
+      http.post('/api/auth/refresh', async ({ request }) => {
+        refreshBody = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: 'refreshed-access' }, traceId: null,
+        });
+      }),
+    );
+
+    await apiClient.get('/api/data');
+
+    expect(refreshBody).toMatchObject({ refreshToken: 'valid-refresh', workspaceId: 10002 });
+    useAuthStore.getState().clear();
+  });
+
+  it('declares a null workspace when refreshing without one selected', async () => {
+    let refreshBody: Record<string, unknown> | null = null;
+    useAuthStore.getState().setTokens('expired-access', 'valid-refresh');
+
+    server.use(
+      http.get('/api/data', ({ request }) => {
+        if (request.headers.get('Authorization') === 'Bearer refreshed-access') {
+          return HttpResponse.json({
+            success: true, code: '0', message: '', data: { ok: true }, traceId: null,
+          });
+        }
+        return HttpResponse.json({
+          success: false, code: '10401', message: '未登录或登录已失效',
+          data: null, traceId: null,
+        }, { status: 401 });
+      }),
+      http.post('/api/auth/refresh', async ({ request }) => {
+        refreshBody = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: 'refreshed-access' }, traceId: null,
+        });
+      }),
+    );
+
+    await apiClient.get('/api/data');
+
+    expect(refreshBody).toMatchObject({ refreshToken: 'valid-refresh', workspaceId: null });
+    expect(useAuthStore.getState().currentWorkspace).toBeNull();
+    useAuthStore.getState().clear();
+  });
+
+  it('stays on the workitem page across a silent refresh instead of bouncing to /workspaces', async () => {
+    // Regression for the reported symptom: the refreshed token used to carry no workspace claim,
+    // so the replayed call returned WORKSPACE_NOT_MEMBER, the interceptor cleared currentWorkspace,
+    // and RouteGuard navigated to /workspaces even though the user was still logged in.
+    let membershipCalls = 0;
+    useAuthStore.getState().setTokens('expired-access', 'valid-refresh');
+    useAuthStore.getState().setCurrentWorkspace(
+      { id: 10002, name: 'AutoWonder', description: '' },
+      'READ_WRITE',
+    );
+
+    server.use(
+      http.get('/api/workitems/53006', ({ request }) => {
+        if (request.headers.get('Authorization') === 'Bearer workspace-bound-token') {
+          return HttpResponse.json({
+            success: true, code: '0', message: '', data: { id: 53006 }, traceId: null,
+          });
+        }
+        return HttpResponse.json({
+          success: false, code: '10401', message: '未登录或登录已失效',
+          data: null, traceId: null,
+        }, { status: 401 });
+      }),
+      http.post('/api/auth/refresh', async ({ request }) => {
+        const body = await request.json() as { workspaceId?: number | null };
+        // Mirrors the backend: the claim survives only if the client re-declares its workspace.
+        const rebound = body.workspaceId === 10002;
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: rebound ? 'workspace-bound-token' : 'detached-token' },
+          traceId: null,
+        });
+      }),
+      http.get('/api/workspaces/current/membership', () => {
+        membershipCalls += 1;
+        return HttpResponse.json({
+          success: false, code: '11001', message: '当前用户不是该工作空间成员',
+          data: null, traceId: null,
+        }, { status: 403 });
+      }),
+    );
+
+    const result = await apiClient.get<{ id: number }>('/api/workitems/53006');
+
+    expect(result.data).toEqual({ id: 53006 });
+    expect(useAuthStore.getState().accessToken).toBe('workspace-bound-token');
+    expect(useAuthStore.getState().currentWorkspace?.id).toBe(10002);
+    expect(useAuthStore.getState().accessLevel).toBe('READ_WRITE');
+    expect(membershipCalls).toBe(0);
+    useAuthStore.getState().clear();
+  });
+
+  it('on 401 with refresh failure, clears auth and redirects to login', async () => {
+    let refreshCalls = 0;
+    useAuthStore.getState().setTokens('expired-access', 'expired-refresh');
+
+    server.use(
+      http.get('/api/data', () => HttpResponse.json({
+        success: false, code: '10401', message: '未登录或登录已失效',
+        data: null, traceId: null,
+      }, { status: 401 })),
+      http.post('/api/auth/refresh', () => {
+        refreshCalls += 1;
+        return HttpResponse.json({
+          success: false, code: '10401', message: '刷新令牌无效或已过期',
+          data: null, traceId: null,
+        }, { status: 401 });
+      }),
+    );
+
+    await expect(apiClient.get('/api/data')).rejects.toBeInstanceOf(ApiError);
+    expect(refreshCalls).toBe(1);
+    expect(useAuthStore.getState().accessToken).toBeNull();
+    expect(useAuthStore.getState().refreshToken).toBeNull();
+  });
+
+  it('concurrent 401s trigger only one refresh request (single-flight)', async () => {
+    let refreshCalls = 0;
+    let dataCalls = 0;
+    useAuthStore.getState().setTokens('expired-access', 'valid-refresh');
+
+    server.use(
+      http.get('/api/data', ({ request }) => {
+        dataCalls += 1;
+        const auth = request.headers.get('Authorization');
+        if (auth === 'Bearer refreshed-access') {
+          return HttpResponse.json({
+            success: true, code: '0', message: '', data: { ok: true }, traceId: null,
+          });
+        }
+        return HttpResponse.json({
+          success: false, code: '10401', message: '未登录或登录已失效',
+          data: null, traceId: null,
+        }, { status: 401 });
+      }),
+      http.post('/api/auth/refresh', async () => {
+        refreshCalls += 1;
+        await new Promise((r) => setTimeout(r, 50));
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: 'refreshed-access' }, traceId: null,
+        });
+      }),
+    );
+
+    const [r1, r2, r3] = await Promise.all([
+      apiClient.get('/api/data'),
+      apiClient.get('/api/data'),
+      apiClient.get('/api/data'),
+    ]);
+    expect(r1.data).toEqual({ ok: true });
+    expect(r2.data).toEqual({ ok: true });
+    expect(r3.data).toEqual({ ok: true });
+    expect(refreshCalls).toBe(1);
+    expect(dataCalls).toBe(6);
+    useAuthStore.getState().clear();
+  });
+
+  it('on 401 with no refresh token, clears auth immediately', async () => {
+    useAuthStore.getState().setAccessToken('expired-access');
+
+    server.use(
+      http.get('/api/data', () => HttpResponse.json({
+        success: false, code: '10401', message: '未登录或登录已失效',
+        data: null, traceId: null,
+      }, { status: 401 })),
+    );
+
+    await expect(apiClient.get('/api/data')).rejects.toBeInstanceOf(ApiError);
+    expect(useAuthStore.getState().accessToken).toBeNull();
+    useAuthStore.getState().clear();
+  });
+
+  it('login 401 surfaces the backend message without refreshing or clearing the session', async () => {
+    let refreshCalls = 0;
+    useAuthStore.getState().setTokens('stale-access', 'stale-refresh');
+
+    server.use(
+      http.post('/api/auth/login', () => HttpResponse.json({
+        success: false, code: '10401', message: '用户名或密码错误',
+        data: null, traceId: 'trace-login-fail',
+      }, { status: 401 })),
+      http.post('/api/auth/refresh', () => {
+        refreshCalls += 1;
+        return HttpResponse.json({
+          success: true, code: '0', message: '',
+          data: { accessToken: 'new-access-token' }, traceId: null,
+        });
+      }),
+    );
+
+    await expect(apiClient.post('/api/auth/login', { username: 'bob', password: 'wrong' }))
+      .rejects.toMatchObject({
+        code: '10401',
+        message: '用户名或密码错误',
+        traceId: 'trace-login-fail',
+      });
+
+    expect(refreshCalls).toBe(0);
+    expect(useAuthStore.getState().accessToken).toBe('stale-access');
+    useAuthStore.getState().clear();
+  });
+
+  it('login failure envelope with HTTP 200 also surfaces the backend message', async () => {
+    server.use(
+      http.post('/api/auth/login', () => HttpResponse.json({
+        success: false, code: '10401', message: '用户名或密码错误',
+        data: null, traceId: 'trace-envelope',
+      })),
+    );
+
+    await expect(apiClient.post('/api/auth/login', { username: 'bob', password: 'wrong' }))
+      .rejects.toMatchObject({
+        code: '10401',
+        message: '用户名或密码错误',
+        traceId: 'trace-envelope',
+      });
+  });
+});
