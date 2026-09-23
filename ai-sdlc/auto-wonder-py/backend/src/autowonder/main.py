@@ -29,6 +29,7 @@ from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
 from autowonder.memories.router import router as memory_router
 from autowonder.notifications.router import router as notification_router
+from autowonder.platform.admin_router import router as platform_admin_router
 from autowonder.platform.router import router as branding_router
 from autowonder.repos.router import router as repo_router
 from autowonder.sdlcs.router import router as sdlc_router
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(user_router)
     app.include_router(branding_router)
+    app.include_router(platform_admin_router)
     app.include_router(agent_router)
     app.include_router(agent_status_router)
     app.include_router(intelligence_router)
@@ -86,9 +88,19 @@ def create_app() -> FastAPI:
 
 
 def serve() -> None:
-    """生产入口：监听配置中的 HTTP 端口。"""
+    """生产入口：先做一次性管理员迁移，再监听配置中的 HTTP 端口。"""
+    import asyncio
+
     import uvicorn
 
+    from autowonder.db.session import SessionLocal
+    from autowonder.platform.admins import bootstrap_platform_admins
+
+    async def _boot() -> None:
+        async with SessionLocal() as session:
+            await bootstrap_platform_admins(session)
+
+    asyncio.run(_boot())
     settings = get_settings()
     uvicorn.run(
         "autowonder.main:create_app",
