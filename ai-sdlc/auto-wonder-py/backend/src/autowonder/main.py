@@ -12,6 +12,8 @@ from autowonder.api.spa import mount_spa
 from autowonder.auth.router import router as auth_router
 from autowonder.config import get_settings
 from autowonder.core.logging import configure_logging
+from autowonder.squads.router import router as squad_router
+from autowonder.templates.router import router as template_router
 from autowonder.workspaces.router import router as workspace_router
 
 
@@ -26,6 +28,8 @@ def create_app() -> FastAPI:
     app.include_router(meta_router)
     app.include_router(auth_router)
     app.include_router(workspace_router)
+    app.include_router(squad_router)
+    app.include_router(template_router)
     dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     if dist.is_dir():
         mount_spa(app, dist)
