@@ -12,6 +12,7 @@ from autowonder.api.errors import install_exception_handlers
 from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
 from autowonder.api.spa import mount_spa
+from autowonder.artifacts.router import router as artifact_router
 from autowonder.audits.router import router as audit_router
 from autowonder.auth.router import router as auth_router
 from autowonder.backups.router import router as backup_router
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(dispatch_router)
     app.include_router(trace_router)
     app.include_router(daemon_checkpoint_router)
+    app.include_router(artifact_router)
     dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     if dist.is_dir():
         mount_spa(app, dist)
