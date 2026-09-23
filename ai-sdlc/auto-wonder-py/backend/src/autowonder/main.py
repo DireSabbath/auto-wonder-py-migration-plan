@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from autowonder import __version__
+from autowonder.agents.platform_router import agent_status_router, intelligence_router
 from autowonder.agents.router import router as agent_router
 from autowonder.aiusage.router import router as ai_usage_router
 from autowonder.api.errors import install_exception_handlers
@@ -53,6 +54,8 @@ def create_app() -> FastAPI:
     app.include_router(user_router)
     app.include_router(branding_router)
     app.include_router(agent_router)
+    app.include_router(agent_status_router)
+    app.include_router(intelligence_router)
     app.include_router(workspace_router)
     app.include_router(squad_router)
     app.include_router(sdlc_router)
