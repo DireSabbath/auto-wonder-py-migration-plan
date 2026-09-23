@@ -25,6 +25,7 @@ from autowonder.platform.router import router as branding_router
 from autowonder.repos.router import router as repo_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.settings.router import router as setting_router
+from autowonder.skills.router import router as skill_router
 from autowonder.squads.router import router as squad_router
 from autowonder.statemachines.router import router as status_template_router
 from autowonder.templates.router import router as template_router
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(status_template_router)
     app.include_router(setting_router)
     app.include_router(category_router)
+    app.include_router(skill_router)
     app.include_router(clarification_router)
     app.include_router(memory_router)
     app.include_router(notification_router)
