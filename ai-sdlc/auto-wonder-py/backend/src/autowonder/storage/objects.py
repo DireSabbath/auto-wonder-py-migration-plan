@@ -14,6 +14,10 @@ class StoredObject:
     size: int
 
 
+class ObjectStorageError(Exception):
+    """对象存储读写失败。品牌 Logo 读取把它变成 502。"""
+
+
 class ObjectStorage(Protocol):
     """与 Java ``ObjectStorage`` 对齐的存储操作。"""
 

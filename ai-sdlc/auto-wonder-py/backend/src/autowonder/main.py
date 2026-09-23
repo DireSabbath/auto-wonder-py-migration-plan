@@ -21,6 +21,7 @@ from autowonder.dashboards.router import router as dashboard_router
 from autowonder.environments.router import router as environment_router
 from autowonder.memories.router import router as memory_router
 from autowonder.notifications.router import router as notification_router
+from autowonder.platform.router import router as branding_router
 from autowonder.repos.router import router as repo_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.settings.router import router as setting_router
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(meta_router)
     app.include_router(auth_router)
     app.include_router(user_router)
+    app.include_router(branding_router)
     app.include_router(agent_router)
     app.include_router(workspace_router)
     app.include_router(squad_router)

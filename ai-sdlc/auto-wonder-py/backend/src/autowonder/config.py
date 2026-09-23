@@ -52,6 +52,11 @@ class Settings(BaseSettings):
         default="http://localhost:7002",
         validation_alias="AUTOWONDER_PUBLIC_BASE_URL",
     )
+    deployment_version: str = Field(default="x.x.x", validation_alias="AUTOWONDER_VERSION")
+    recommended_runtime_version: str = Field(
+        default="0.2.163",
+        validation_alias="AUTOWONDER_RUNTIME_RECOMMENDED_VERSION",
+    )
     community_edition: bool = Field(default=True, validation_alias="AUTOWONDER_COMMUNITY_EDITION")
     aone_enabled: bool = Field(default=False, validation_alias="AUTOWONDER_AONE_ENABLED")
     s3_enabled: bool = Field(default=False, validation_alias="S3_ENABLED")

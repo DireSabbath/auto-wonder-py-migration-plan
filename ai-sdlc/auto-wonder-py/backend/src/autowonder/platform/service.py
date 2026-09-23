@@ -6,7 +6,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autowonder.core.errors import BizError, ErrorCode
 from autowonder.users.models import User
+
+_ADMIN_DENIED_PREFIX = "仅平台管理员可以"
 
 
 async def is_system_admin(session: AsyncSession, user_id: int) -> bool:
@@ -15,6 +18,15 @@ async def is_system_admin(session: AsyncSession, user_id: int) -> bool:
         select(User).where(User.id == user_id, User.is_deleted == 0).limit(1)
     )
     return user is not None and user.is_admin == 1
+
+
+async def require_system_admin(session: AsyncSession, user_id: int | None, action: str) -> None:
+    """非平台管理员不能执行平台配置写操作。"""
+    allowed = False
+    if user_id is not None:
+        allowed = await is_system_admin(session, user_id)
+    if not allowed:
+        raise BizError(ErrorCode.NO_PERMISSION, _ADMIN_DENIED_PREFIX + action)
 
 
 async def count_system_admins(session: AsyncSession) -> int:
