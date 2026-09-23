@@ -21,6 +21,7 @@ from autowonder.core.logging import configure_logging
 from autowonder.dashboards.router import router as dashboard_router
 from autowonder.debuglogs.router import router as debug_log_router
 from autowonder.dispatch.router import router as dispatch_router
+from autowonder.dispatch.router import trace_router
 from autowonder.environments.router import router as environment_router
 from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(repo_router)
     app.include_router(debug_log_router)
     app.include_router(dispatch_router)
+    app.include_router(trace_router)
     dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     if dist.is_dir():
         mount_spa(app, dist)

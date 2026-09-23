@@ -5,7 +5,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
 from autowonder.api.access import access_denied_body
-from autowonder.core.errors import BizError, ErrorCode, WorkspaceAccessDenied
+from autowonder.core.errors import (
+    BizError,
+    ErrorCode,
+    IllegalArgumentError,
+    WorkspaceAccessDenied,
+)
 from autowonder.core.result import fail
 
 
@@ -28,6 +33,13 @@ def _biz_status(code: str) -> int:
 
 def install_exception_handlers(app: FastAPI) -> None:
     """注册与 Java advice 相同的异常到 HTTP 映射。"""
+
+    @app.exception_handler(IllegalArgumentError)
+    async def handle_illegal(_request: Request, exc: IllegalArgumentError) -> JSONResponse:
+        return JSONResponse(
+            status_code=200,
+            content=fail(ErrorCode.PARAM_INVALID, str(exc)),
+        )
 
     @app.exception_handler(BizError)
     async def handle_biz(_request: Request, exc: BizError) -> JSONResponse:

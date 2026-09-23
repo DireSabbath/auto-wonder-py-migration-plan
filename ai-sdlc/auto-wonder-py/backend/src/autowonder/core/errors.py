@@ -220,6 +220,10 @@ class BizError(Exception):
         super().__init__(error_code.message if message is None else message)
 
 
+class IllegalArgumentError(Exception):
+    """对齐 ``IllegalArgumentException``：HTTP 200，业务码 10001，消息用异常文本。"""
+
+
 class WorkspaceAccessDenied(Exception):
     """工作空间访问级别不足，响应体带 current/required/action。"""
 
