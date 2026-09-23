@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 
 from autowonder.core.context import current
-from autowonder.core.errors import ErrorCode, WorkspaceAccessDenied
+from autowonder.core.errors import BizError, ErrorCode, WorkspaceAccessDenied
 
 
 class WorkspaceAccessLevel(Enum):
@@ -26,10 +26,12 @@ def require_access(
     """FastAPI 依赖：当前请求的工作空间级别不足时拒绝。"""
 
     async def checker() -> WorkspaceAccessLevel:
-        level_name = current().access_level
-        if level_name is None:
-            raise WorkspaceAccessDenied("NONE", required.name, action)
-        level = WorkspaceAccessLevel[level_name]
+        ctx = current()
+        if ctx.user_id is None:
+            raise BizError(ErrorCode.UNAUTHORIZED)
+        if ctx.workspace_id is None or ctx.access_level is None:
+            raise BizError(ErrorCode.WORKSPACE_NOT_MEMBER)
+        level = WorkspaceAccessLevel[ctx.access_level]
         if not level.allows(required):
             raise WorkspaceAccessDenied(level.name, required.name, action)
         return level

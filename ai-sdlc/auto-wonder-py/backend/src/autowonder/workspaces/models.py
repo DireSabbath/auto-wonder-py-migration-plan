@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, Integer, String, Text, text
+from sqlalchemy import JSON, BigInteger, Computed, DateTime, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from autowonder.core.clock import now_local
@@ -154,7 +154,11 @@ class WorkspaceAccessRequest(Base):
         server_default=text("'PENDING'"),
         comment="PENDING / APPROVED / REJECTED",
     )
-    pending_marker: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pending_marker: Mapped[int | None] = mapped_column(
+        Integer,
+        Computed("CASE WHEN status = 'PENDING' THEN 1 ELSE NULL END", persisted=True),
+        nullable=True,
+    )
     reviewer_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, comment="审批人 user ID"
     )

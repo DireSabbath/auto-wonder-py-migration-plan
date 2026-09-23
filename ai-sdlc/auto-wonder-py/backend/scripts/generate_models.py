@@ -248,6 +248,11 @@ def parse_column(item: str) -> dict[str, object] | None:
         re.IGNORECASE,
     )
     default_sql = default_match.group(1) if default_match else None
+    generated_match = re.search(
+        r"GENERATED ALWAYS AS \((.+)\) STORED",
+        flags,
+        re.IGNORECASE,
+    )
     return {
         "name": name,
         "sql_type": sql_type,
@@ -256,6 +261,7 @@ def parse_column(item: str) -> dict[str, object] | None:
         "autoincrement": autoincrement,
         "comment": comment_match.group(1) if comment_match else None,
         "default_sql": default_sql,
+        "generated": generated_match.group(1) if generated_match else None,
     }
 
 
@@ -309,7 +315,12 @@ def render_column(column: dict[str, object]) -> str:
         kwargs.append("nullable=True")
     else:
         kwargs.append("nullable=False")
+    if column["generated"]:
+        kwargs.append(f"Computed({column['generated']!r}, persisted=True)")
+        column["_needs_computed"] = True
     default_sql = column["default_sql"]
+    if column["generated"]:
+        default_sql = None
     if isinstance(default_sql, str) and default_sql.upper() != "NULL":
         if default_sql.upper().startswith("CURRENT_TIMESTAMP"):
             kwargs.append("default=now_local")
@@ -346,6 +357,7 @@ def render_module(domain: str, tables: list[dict[str, object]], tenant_tables: s
     needs_clock = False
     needs_text = False
     needs_datetime = False
+    needs_computed = False
     class_blocks: list[str] = []
     class_names: list[str] = []
     tenant_names: list[str] = []
@@ -360,6 +372,8 @@ def render_module(domain: str, tables: list[dict[str, object]], tenant_tables: s
                 needs_text = True
             if str(column["sql_type"]).upper().startswith("DATETIME"):
                 needs_datetime = True
+            if column.get("_needs_computed"):
+                needs_computed = True
         name = class_name(str(table["name"]))
         class_names.append(name)
         if table["name"] in tenant_tables:
@@ -374,6 +388,8 @@ def render_module(domain: str, tables: list[dict[str, object]], tenant_tables: s
         header.append("from datetime import datetime")
         header.append("")
     sa_names = sorted(imports)
+    if needs_computed:
+        sa_names.append("Computed")
     if needs_text:
         sa_names.append("text")
     header.append("from sqlalchemy import " + ", ".join(sa_names))

@@ -9,6 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autowonder.users.models import User
 
 
+async def is_system_admin(session: AsyncSession, user_id: int) -> bool:
+    """平台管理员只看 ``user.is_admin``，没有首位用户的兜底。"""
+    user = await session.scalar(
+        select(User).where(User.id == user_id, User.is_deleted == 0).limit(1)
+    )
+    return user is not None and user.is_admin == 1
+
+
 async def count_system_admins(session: AsyncSession) -> int:
     """统计未删除的平台管理员人数。"""
     result = await session.execute(
