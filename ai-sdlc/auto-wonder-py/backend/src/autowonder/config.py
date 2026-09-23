@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     redis_password: str = Field(default="", validation_alias="REDIS_PASSWORD")
     redis_database: int = Field(default=0, validation_alias="REDIS_DATABASE")
     http_port: int = Field(default=7002, validation_alias="AUTOWONDER_HTTP_PORT")
+    repo_test_git_binary: str = Field(
+        default="git",
+        validation_alias="AUTOWONDER_REPO_TEST_GIT_BINARY",
+    )
+    repo_test_timeout_sec: int = Field(
+        default=30,
+        validation_alias="AUTOWONDER_REPO_TEST_TIMEOUT_SEC",
+    )
     public_base_url: str = Field(
         default="http://localhost:7002",
         validation_alias="AUTOWONDER_PUBLIC_BASE_URL",
