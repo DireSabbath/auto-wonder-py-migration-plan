@@ -27,6 +27,7 @@ from autowonder.settings.router import router as setting_router
 from autowonder.squads.router import router as squad_router
 from autowonder.statemachines.router import router as status_template_router
 from autowonder.templates.router import router as template_router
+from autowonder.users.router import router as user_router
 from autowonder.workspaces.router import router as workspace_router
 
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
     app.include_router(meta_router)
     app.include_router(auth_router)
+    app.include_router(user_router)
     app.include_router(agent_router)
     app.include_router(workspace_router)
     app.include_router(squad_router)
