@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from autowonder.core.clock import now_local
 from autowonder.db.rows import rowcount
@@ -51,7 +52,7 @@ async def dispatch_pending(session: AsyncSession, limit: int) -> int:
     return success
 
 
-def _pending() -> object:
+def _pending() -> ColumnElement[bool]:
     return or_(
         IntegrationOutbox.status == "PENDING",
         (IntegrationOutbox.status == "FAILED") & (IntegrationOutbox.next_retry_at <= now_local()),

@@ -60,10 +60,10 @@ class ExternalProjectMember:
 
 
 @dataclass
-class PageResult:
+class PageResult[Item]:
     """分页。``total_count`` 来自 Aone 信封。"""
 
-    items: list[object]
+    items: list[Item]
     page: int
     page_size: int
     total_count: int
@@ -223,7 +223,7 @@ def search_projects(
     query: str,
     page: int,
     page_size: int,
-) -> PageResult:
+) -> PageResult[ExternalProject]:
     """按名称搜索项目。"""
     import json
 
@@ -281,7 +281,7 @@ def search_project_first_page(
     client: AoneClient,
     config: AoneConfig,
     project_id: str,
-) -> PageResult:
+) -> PageResult[ExternalWorkitemDetail]:
     """连接测试只拉第一页。"""
     result = _search_page(client, config, project_id, [], None, None, 1, _PER_PAGE)
     items = _to_workitems(result)
@@ -292,7 +292,7 @@ def search_project(
     client: AoneClient,
     config: AoneConfig,
     project_id: str,
-) -> PageResult:
+) -> PageResult[ExternalWorkitemDetail]:
     """按创建时间窗口扫描。超过偏移上限时对半切分窗口。"""
     collected: dict[str, ExternalWorkitemDetail] = {}
     state = {"first_done": False}
@@ -313,7 +313,7 @@ def search_by_ids(
     config: AoneConfig,
     project_id: str,
     ids: list[str],
-) -> PageResult:
+) -> PageResult[ExternalWorkitemDetail]:
     """idList 每批最多 50 个。"""
     if len(ids) == 0:
         return PageResult([], 1, _PER_PAGE, 0)

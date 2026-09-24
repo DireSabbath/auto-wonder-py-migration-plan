@@ -67,7 +67,7 @@ async def add_human_comment(
     """给运行写真人评论。空白正文是参数不合法。"""
     require_scheduled_capability()
     run = await _require_run(session, workspace_id, run_id)
-    if java_is_blank(content_md):
+    if content_md is None or java_is_blank(content_md):
         raise BizError(ErrorCode.PARAM_INVALID)
     comment = WorkitemComment(
         tenant_id=workspace_id,
@@ -80,7 +80,7 @@ async def add_human_comment(
     session.add(comment)
     await session.flush()
     user = await session.get(User, user_id)
-    display = "HUMAN"
+    display: str | None = "HUMAN"
     if user is not None:
         display = person_name(user.nickname, user.username)
     notices = await _mentions(

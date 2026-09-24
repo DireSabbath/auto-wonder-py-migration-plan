@@ -2,7 +2,9 @@
 
 import logging
 import os
+from collections.abc import Awaitable
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,7 +128,7 @@ async def create_session(
         )
         await session.flush()
     await session.commit()
-    await redis_client().lpush(_QUEUE, str(row.id))
+    await cast(Awaitable[int], redis_client().lpush(_QUEUE, str(row.id)))
     logger.info(
         "AI session queued sessionId=%s scene=%s bizRefType=%s bizRefId=%s tenantId=%s userId=%s",
         row.id,
@@ -210,7 +212,7 @@ async def append_message(
     if rowcount(changed) != 1:
         raise BizError(ErrorCode.AI_SESSION_NOT_WAIT_USER)
     await session.commit()
-    await redis_client().lpush(_QUEUE, str(session_id))
+    await cast(Awaitable[int], redis_client().lpush(_QUEUE, str(session_id)))
     logger.info("ai session appendMessage sessionId=%s re-queued", session_id)
 
 

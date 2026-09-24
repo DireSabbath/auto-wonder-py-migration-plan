@@ -10,6 +10,7 @@ from autowonder.core.errors import BizError, ErrorCode
 from autowonder.integrations.aone_api import (
     AoneClient,
     AoneConfig,
+    ExternalIssueType,
     get_project,
     list_enabled_issue_types,
     list_members,
@@ -251,8 +252,10 @@ async def _bootstrap(
     return synced
 
 
-def _enabled_issue_types(binding: ExternalProjectBinding, config: AoneConfig) -> list[object]:
-    result: list[object] = []
+def _enabled_issue_types(
+    binding: ExternalProjectBinding, config: AoneConfig
+) -> list[ExternalIssueType]:
+    result: list[ExternalIssueType] = []
     for stamp in ("Req", "Bug", "Task"):
         try:
             loaded = list_enabled_issue_types(

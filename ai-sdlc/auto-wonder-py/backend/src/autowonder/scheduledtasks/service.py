@@ -3,11 +3,12 @@
 import logging
 import re
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import and_, case, func, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
 
 from autowonder.audits.service import AuditRecord, record_required
 from autowonder.core.errors import BizError, ErrorCode
@@ -37,11 +38,13 @@ TERMINAL_RUN_STATUSES = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELED
 HEALTH_COMPLETED = ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELED", "SKIPPED")
 _ASCII_WS = re.compile(r"[ \t\n\x0b\f\r]+")
 _SCHEDULE = ScheduledTaskSchedule()
-_SHANGHAI_DAY_START = literal_column(
+_SHANGHAI_DAY_START: ColumnElement[Any] = literal_column(
     "DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR) - INTERVAL 8 HOUR"
 )
-_SHANGHAI_DAY_END = literal_column("DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR) + INTERVAL 16 HOUR")
-_SINCE_30_DAYS = literal_column("UTC_TIMESTAMP() - INTERVAL 30 DAY")
+_SHANGHAI_DAY_END: ColumnElement[Any] = literal_column(
+    "DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR) + INTERVAL 16 HOUR"
+)
+_SINCE_30_DAYS: ColumnElement[Any] = literal_column("UTC_TIMESTAMP() - INTERVAL 30 DAY")
 
 
 def utc_now() -> datetime:
@@ -170,11 +173,13 @@ async def list_tasks(
     total = await session.scalar(
         count_statement(workspace_id, status, creator_id, squad_id, keyword)
     )
-    return PageResult(
-        list_=views,
-        total=int(total),
-        page_num=bounded_offset // bounded_limit + 1,
-        page_size=bounded_limit,
+    return PageResult.model_validate(
+        {
+            "list": views,
+            "total": int(cast(int, total)),
+            "pageNum": bounded_offset // bounded_limit + 1,
+            "pageSize": bounded_limit,
+        }
     )
 
 
@@ -220,18 +225,18 @@ async def enable_task(
     _require_actor(workspace_id, user_id)
     _require_task_id(task_id)
     task = await _require_task(session, workspace_id, task_id)
-    _require_version(task.version, version)
+    pinned_version = _require_version(task.version, version)
     if task.status != "PAUSED":
         raise BizError(ErrorCode.SCHEDULED_TASK_INVALID_STATE, "只有暂停任务可以启用")
     validate_definition(task, _SCHEDULE)
     await validate_references(session, task, workspace_id)
     task.next_fire_at = _next_fire(task, utc_now())
     task.modifier_id = user_id
-    task.version = version
-    changed = await _update_definition(session, task, cast(int, version))
+    task.version = pinned_version
+    changed = await _update_definition(session, task, pinned_version)
     if changed != 1:
         raise BizError(ErrorCode.SCHEDULED_TASK_VERSION_CONFLICT)
-    status_version = cast(int, version) + 1
+    status_version = pinned_version + 1
     changed = await _update_status(
         session, workspace_id, task_id, "PAUSED", "ACTIVE", status_version, user_id
     )
@@ -349,7 +354,10 @@ async def task_health(
     succeeded = await session.scalar(
         _health_count(workspace_id, task_id, ("SUCCEEDED",), since)
     )
-    return ScheduledTaskHealthView(completed30d=int(completed), success30d=int(succeeded))
+    return ScheduledTaskHealthView(
+        completed30d=int(cast(int, completed)),
+        success30d=int(cast(int, succeeded)),
+    )
 
 
 def list_statement(
@@ -598,9 +606,10 @@ async def _require_task(session: AsyncSession, workspace_id: int, task_id: int) 
     return task
 
 
-def _require_version(actual: int | None, expected: int | None) -> None:
+def _require_version(actual: int | None, expected: int | None) -> int:
     if expected is None or expected < 0 or expected != actual:
         raise BizError(ErrorCode.SCHEDULED_TASK_VERSION_CONFLICT)
+    return expected
 
 
 async def _transition(
@@ -769,8 +778,8 @@ def _filters(
     creator_id: int | None,
     squad_id: int | None,
     keyword: str | None,
-) -> list[object]:
-    clauses: list[object] = [
+) -> list[ColumnElement[bool]]:
+    clauses: list[ColumnElement[bool]] = [
         ScheduledTask.workspace_id == workspace_id,
         ScheduledTask.is_deleted == 0,
     ]

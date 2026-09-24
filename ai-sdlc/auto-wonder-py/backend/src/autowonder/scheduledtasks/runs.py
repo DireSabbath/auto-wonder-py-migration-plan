@@ -705,18 +705,18 @@ async def _mention_candidates(
     frozen = _frozen_ids(run.execution_snapshot_json)
     found: dict[str, ScheduledRunMentionCandidateView] = {}
     for participant in await _participants(session, workspace_id, run):
-        agent = participant.agent or participant.target_type == "AGENT"
+        is_agent = participant.agent or participant.target_type == "AGENT"
         candidate = ScheduledRunMentionCandidateView(
             user_id=participant.user_id,
-            target_type="AGENT" if agent else "HUMAN",
+            target_type="AGENT" if is_agent else "HUMAN",
             name=participant.name,
             display_id=participant.display_id,
-            agent=agent,
+            agent=is_agent,
             online=participant.online,
             executor_status=participant.executor_status,
             mentionable=True,
         )
-        if agent:
+        if is_agent:
             mentionable = participant.user_id in frozen
             candidate.mentionable = mentionable
             if not mentionable:
@@ -893,6 +893,9 @@ async def _delivery(
         agent_row = None
         if dispatch.agent_id is not None:
             agent_row = await session.get(Agent, dispatch.agent_id)
+        step_name = None
+        if dispatch.sdlc_step_id is not None:
+            step_name = names.get(dispatch.sdlc_step_id)
         nodes.append(
             ProcessGraphNodeView(
                 key="dispatch-" + str(dispatch.id),
@@ -900,7 +903,7 @@ async def _delivery(
                 agent_id=dispatch.agent_id,
                 agent_name=None if agent_row is None else agent_row.name,
                 step_id=dispatch.sdlc_step_id,
-                step_name=names.get(dispatch.sdlc_step_id),
+                step_name=step_name,
                 status=dispatch.status,
                 started_at=dispatch.gmt_create,
             )
