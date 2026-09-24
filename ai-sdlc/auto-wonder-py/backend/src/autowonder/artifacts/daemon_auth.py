@@ -1,5 +1,6 @@
 """Daemon 上传鉴权。调度不存在或执行器令牌不对时拒绝。"""
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -10,6 +11,8 @@ from autowonder.dispatch.query import execution_source_type
 from autowonder.executors.models import Executor
 from autowonder.executors.tokens import validate
 from autowonder.workitems.models import WorkitemExecutionControl
+
+logger = logging.getLogger(__name__)
 
 _INTERACTION_MODES = frozenset(
     {"COMMENT_INTERACTION", "SIDE_INTERACTION", "CANONICAL_INTERACTION"}
@@ -98,16 +101,55 @@ async def load_mutation_fence(session: AsyncSession, dispatch_id: int) -> bool:
     return mutation_fenced(dispatch, cancel_requested, workitem_closed)
 
 
+@dataclass
+class DetailedUploadAuth:
+    """调试日志签发要区分调度不存在和令牌无效。"""
+
+    status: str
+    dispatch: Dispatch | None
+
+
+async def authenticate_detailed(
+    session: AsyncSession,
+    dispatch_id: int,
+    token: str | None,
+) -> DetailedUploadAuth:
+    """与普通上传同一条校验链，但 404 和 403 分开返回。"""
+    dispatch = await _load_dispatch(session, dispatch_id)
+    if dispatch is None:
+        logger.info(
+            "detailed upload auth failed dispatchId=%s reason=dispatch_not_found",
+            dispatch_id,
+        )
+        return DetailedUploadAuth("DISPATCH_NOT_FOUND", None)
+    executor = await _load_executor(session, dispatch)
+    if executor is None or not validate(executor.token_ref, token):
+        logger.info(
+            "detailed upload auth failed dispatchId=%s reason=executor_or_token_invalid",
+            dispatch_id,
+        )
+        return DetailedUploadAuth("TOKEN_INVALID", dispatch)
+    return DetailedUploadAuth("OK", dispatch)
+
+
 async def authenticate(session: AsyncSession, dispatch_id: int, token: str | None) -> UploadAuth:
     """按调度找到执行器，再校验上传令牌。"""
-    dispatch = await session.scalar(
+    dispatch = await _load_dispatch(session, dispatch_id)
+    executor = await _load_executor(session, dispatch)
+    return authenticate_loaded(dispatch, executor, token)
+
+
+async def _load_dispatch(session: AsyncSession, dispatch_id: int) -> Dispatch | None:
+    return await session.scalar(
         select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.is_deleted == 0).limit(1)
     )
-    executor = None
-    if dispatch is not None and dispatch.executor_id is not None:
-        executor = await session.scalar(
-            select(Executor)
-            .where(Executor.id == dispatch.executor_id, Executor.is_deleted == 0)
-            .limit(1)
-        )
-    return authenticate_loaded(dispatch, executor, token)
+
+
+async def _load_executor(session: AsyncSession, dispatch: Dispatch | None) -> Executor | None:
+    if dispatch is None or dispatch.executor_id is None:
+        return None
+    return await session.scalar(
+        select(Executor)
+        .where(Executor.id == dispatch.executor_id, Executor.is_deleted == 0)
+        .limit(1)
+    )

@@ -165,7 +165,7 @@ async def canonical_object_key(session: AsyncSession, dispatch: Dispatch, run_no
             .limit(1)
         )
         task_id = 0
-        if run is not None:
+        if run is not None and run.scheduled_task_id is not None:
             task_id = run.scheduled_task_id
         else:
             logger.warning(

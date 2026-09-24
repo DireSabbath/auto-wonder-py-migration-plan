@@ -24,6 +24,7 @@ from autowonder.config import get_settings
 from autowonder.core.logging import configure_logging
 from autowonder.dashboards.router import router as dashboard_router
 from autowonder.debuglogs.router import router as debug_log_router
+from autowonder.debuglogs.upload_router import router as daemon_debug_log_router
 from autowonder.dispatch.daemon_router import router as daemon_checkpoint_router
 from autowonder.dispatch.router import router as dispatch_router
 from autowonder.dispatch.router import trace_router
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(trace_router)
     app.include_router(daemon_checkpoint_router)
     app.include_router(daemon_artifact_router)
+    app.include_router(daemon_debug_log_router)
     app.include_router(artifact_router)
     app.include_router(cli_document_router)
     dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
