@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from autowonder import __version__
 from autowonder.agents.platform_router import agent_status_router, intelligence_router
 from autowonder.agents.router import router as agent_router
+from autowonder.aiusage.daemon_router import router as daemon_usage_router
 from autowonder.aiusage.router import router as ai_usage_router
 from autowonder.api.errors import install_exception_handlers
 from autowonder.api.meta import router as meta_router
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(daemon_checkpoint_router)
     app.include_router(daemon_executor_router)
     app.include_router(daemon_artifact_router)
+    app.include_router(daemon_usage_router)
     app.include_router(daemon_debug_log_router)
     app.include_router(artifact_router)
     app.include_router(cli_document_router)

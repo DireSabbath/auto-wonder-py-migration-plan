@@ -1,11 +1,11 @@
-"""从 observability/usage.json 写入派发级用量。解析失败只记日志。"""
+"""写入派发级用量。产物解析失败只记日志；接口上报按调度归属落库。"""
 
 import json
 import logging
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,8 +113,8 @@ async def ingest_usage_artifact(
                 dispatch_id,
             )
             return
-        dispatch = await session.get(Dispatch, dispatch_id)
-        if dispatch is None or dispatch.tenant_id != tenant_id or dispatch.is_deleted != 0:
+        dispatch = await _active_dispatch(session, dispatch_id)
+        if dispatch is None or dispatch.tenant_id != tenant_id:
             logger.warning(
                 "usage artifact ingest skipped artifactId=%s ossRef=%s workitemId=%s "
                 "dispatchId=%s reason=dispatch_not_found",
@@ -137,10 +137,40 @@ async def ingest_usage_artifact(
         )
 
 
+async def record_task_usage(
+    session: AsyncSession,
+    tenant_id: int,
+    dispatch_id: int,
+    entries: list[dict[str, Any]] | None,
+) -> None:
+    """没有条目时不写库。调度不存在或空间不一致时跳过，接口仍可返回已接受。"""
+    if entries is None:
+        return
+    if len(entries) == 0:
+        return
+    dispatch = await _active_dispatch(session, dispatch_id)
+    if dispatch is None or dispatch.tenant_id != tenant_id:
+        logger.warning(
+            "task usage skipped dispatchId=%s tenantId=%s reason=dispatch_not_found",
+            dispatch_id,
+            tenant_id,
+        )
+        return
+    for entry in entries:
+        await _persist(session, dispatch, None, entry)
+
+
+async def _active_dispatch(session: AsyncSession, dispatch_id: int) -> Dispatch | None:
+    """与 Java ``findById`` 相同，只取未删除的调度。"""
+    return await session.scalar(
+        select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.is_deleted == 0).limit(1)
+    )
+
+
 async def _persist(
     session: AsyncSession,
     dispatch: Dispatch,
-    artifact_id: int,
+    artifact_id: int | None,
     entry: dict[str, Any],
 ) -> None:
     provider = _name(entry.get("provider"))
