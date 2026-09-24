@@ -92,9 +92,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, ran: list[int]) -> None:
         ran.append(dispatch_id)
         return True
 
-    async def publish_status(
-        session: AsyncSession, workspace_id: int, run_id: int
-    ) -> None:
+    async def publish_status(session: AsyncSession, workspace_id: int, run_id: int) -> None:
         return None
 
     monkeypatch.setattr(
@@ -127,9 +125,7 @@ async def test_paused_dispatch_resumes_with_the_frozen_version(
     assert run.current_step_id == 91
     assert run.sdlc_id == 52
     created = [
-        row
-        for row in session.rows
-        if isinstance(row, Dispatch) and row.status == "PENDING"
+        row for row in session.rows if isinstance(row, Dispatch) and row.status == "PENDING"
     ]
     assert len(created) == 1
     continuation = created[0]

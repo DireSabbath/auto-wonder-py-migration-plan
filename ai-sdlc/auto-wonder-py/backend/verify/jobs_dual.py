@@ -521,7 +521,8 @@ def _run_java() -> str:
         "-Dautowonder.ai.worker-pool-size=1 "
         "-Dautowonder.workitem.scheduled-start.scanner-enabled=false "
         "-cp target/auto-wonder.jar org.springframework.boot.loader.PropertiesLauncher "
-        + specs + " > /tmp/jobdual-java.log 2>&1"
+        + specs
+        + " > /tmp/jobdual-java.log 2>&1"
     )
     try:
         subprocess.run(

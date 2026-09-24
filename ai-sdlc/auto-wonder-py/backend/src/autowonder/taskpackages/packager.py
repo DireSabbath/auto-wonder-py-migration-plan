@@ -751,10 +751,7 @@ def _generated_skill(capability: dict[str, object], name: str) -> bytes:
 
 def _yaml_string(value: str) -> str:
     escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\r", "\\r")
-        .replace("\n", "\\n")
+        value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
     )
     return '"' + escaped + '"'
 
@@ -962,4 +959,3 @@ def _omit_null(value: object) -> object:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
-

@@ -12,9 +12,7 @@ from autowonder.workitems.events import WorkitemAssigned
 logger = logging.getLogger(__name__)
 
 
-async def on_workitem_assigned(
-    session: AsyncSession, event: WorkitemAssigned
-) -> Dispatch | None:
+async def on_workitem_assigned(session: AsyncSession, event: WorkitemAssigned) -> Dispatch | None:
     """步骤或员工缺失时跳过。两者都在时按指派版本幂等入队。"""
     step_id = event.sdlc_step_id
     agent_id = event.agent_id

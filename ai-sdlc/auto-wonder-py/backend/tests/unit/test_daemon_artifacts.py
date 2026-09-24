@@ -398,9 +398,7 @@ async def test_debug_relay_uses_the_canonical_key() -> None:
     storage = ScriptedStorage(
         StoredObject("test-artifact-bucket/debug/20/DevAgent-run-1.log.gz", "md5", 7),
     )
-    metadata = (
-        '[{"path":"debug/DevAgent-99.log.gz","sha256":"' + ("a" * 64) + '","sizeBytes":7}]'
-    )
+    metadata = '[{"path":"debug/DevAgent-99.log.gz","sha256":"' + ("a" * 64) + '","sizeBytes":7}]'
     result = await _upload(
         storage,
         _hooks(sink, relay=True),

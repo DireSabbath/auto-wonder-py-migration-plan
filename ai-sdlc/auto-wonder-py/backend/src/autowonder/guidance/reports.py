@@ -327,9 +327,7 @@ async def _bind_reply(
     return rowcount(result)
 
 
-async def _bind_executor(
-    session: AsyncSession, guidance_id: int, dispatch: Dispatch
-) -> int:
+async def _bind_executor(session: AsyncSession, guidance_id: int, dispatch: Dispatch) -> int:
     result = await session.execute(
         update(WorkitemCommentDelivery)
         .where(

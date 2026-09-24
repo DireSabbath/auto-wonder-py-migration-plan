@@ -366,9 +366,7 @@ class PresenceManager:
         session_id = await self.current_session_id(executor_id)
         if session_id is None:
             return None
-        return _redis_text(
-            await redis_client().get(_protocol_error_key(executor_id, session_id))
-        )
+        return _redis_text(await redis_client().get(_protocol_error_key(executor_id, session_id)))
 
     async def current_agent_protocol_error(self, agent_id: int) -> str | None:
         """该数字员工任一在线成员上的协议错误。"""

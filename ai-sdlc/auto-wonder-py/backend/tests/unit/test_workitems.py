@@ -402,9 +402,7 @@ async def test_agent_assign_binds_sdlc_and_skips_enqueue_without_step() -> None:
     events = [row for row in session.rows if row.__class__.__name__ == "WorkitemEvent"]
     assert [row.event_type for row in events] == ["CREATE", "ASSIGN"]
     assert events[1].detail_json == {"fromType": "HUMAN", "toType": "AGENT"}
-    await on_workitem_assigned(
-        session, WorkitemAssigned(1, stored.id, None, 4, stored.version, 7)
-    )
+    await on_workitem_assigned(session, WorkitemAssigned(1, stored.id, None, 4, stored.version, 7))
 
 
 async def test_assign_same_person_is_noop_and_other_tenant_is_hidden() -> None:

@@ -340,9 +340,7 @@ async def recovery_control(
     elif body.action == "reopen":
         data = await reopen(session, tenant_id, workitemId, user_id)
     elif body.action == "cancel":
-        data = await cancel(
-            session, tenant_id, workitemId, body.dispatch_id, user_id, body.force
-        )
+        data = await cancel(session, tenant_id, workitemId, body.dispatch_id, user_id, body.force)
     else:
         raise BizError(ErrorCode.CONFLICT, "不支持的恢复操作")
     return ok(data)
@@ -374,12 +372,8 @@ async def continue_dispatch_item(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """继续失败或暂停的派发。新行保持 PENDING，直到调度主环启动。"""
-    created = await continue_workitem(
-        session, _workspace_id(), workitemId, dispatchId, _user_id()
-    )
-    return ok(
-        {"dispatchId": created.id, "attempt": created.attempt, "status": created.status}
-    )
+    created = await continue_workitem(session, _workspace_id(), workitemId, dispatchId, _user_id())
+    return ok({"dispatchId": created.id, "attempt": created.attempt, "status": created.status})
 
 
 @router.get("/{id}/participants")

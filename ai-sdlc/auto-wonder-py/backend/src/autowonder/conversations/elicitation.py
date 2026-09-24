@@ -106,9 +106,7 @@ async def reply(
             "elicitation was settled concurrently: " + request_id,
         )
     try:
-        await send_elicitation_reply(
-            conversation, record.turn_id, request_id, action, normalized
-        )
+        await send_elicitation_reply(conversation, record.turn_id, request_id, action, normalized)
     except Exception as error:
         await restore_pending_if_status(session, tenant_id, conversation_id, request_id, status)
         logger.warning(
@@ -190,9 +188,7 @@ async def notify_runtime_best_effort(
         )
         return
     try:
-        await send_elicitation_reply(
-            conversation, record.turn_id, record.request_id, action, None
-        )
+        await send_elicitation_reply(conversation, record.turn_id, record.request_id, action, None)
         logger.info(
             "acp elicitation %s delivered conversationId=%s turnId=%s requestId=%s",
             status,

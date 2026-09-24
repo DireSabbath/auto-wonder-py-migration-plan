@@ -900,11 +900,7 @@ async def _update_existing(
     updated = False
     if existing is not None and existing.assignee_type == "EXTERNAL":
         incoming = detail.status_name
-        if (
-            incoming is not None
-            and incoming.strip() != ""
-            and incoming != link.source_status_name
-        ):
+        if incoming is not None and incoming.strip() != "" and incoming != link.source_status_name:
             node = await ensure_status(session, binding, detail, [], user_id)
             if node is not None and node.id != existing.status_node_id:
                 changed = await session.execute(

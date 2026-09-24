@@ -171,9 +171,7 @@ class MemorySession:
             dispatch_id = _eq(comps, "id")
             if dispatch_id is not None:
                 return [
-                    row
-                    for row in self.dispatches
-                    if row.id == dispatch_id and row.is_deleted == 0
+                    row for row in self.dispatches if row.id == dispatch_id and row.is_deleted == 0
                 ]
             source_type = _eq(comps, "source_type")
             tenant_id = _eq(comps, "tenant_id")

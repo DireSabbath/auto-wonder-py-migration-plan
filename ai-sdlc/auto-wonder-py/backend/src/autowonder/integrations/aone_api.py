@@ -215,17 +215,11 @@ class AoneClient:
             payload = response.json()
         except ValueError as error:
             raise AoneOpenApiError(
-                "Aone returned non-JSON response: HTTP "
-                + str(response.status_code)
-                + " "
-                + text
+                "Aone returned non-JSON response: HTTP " + str(response.status_code) + " " + text
             ) from error
         if not isinstance(payload, dict):
             raise AoneOpenApiError(
-                "Aone returned non-JSON response: HTTP "
-                + str(response.status_code)
-                + " "
-                + text
+                "Aone returned non-JSON response: HTTP " + str(response.status_code) + " " + text
             )
         _log_read(path, response.status_code, payload)
         success = bool(payload.get("success"))
@@ -599,9 +593,7 @@ def _scan_window(
     from_date = None if start_ms <= _DEFAULT_EPOCH_MILLIS else _from_millis(start_ms)
     to_date = _from_millis(end_ms)
     try:
-        first_page = _search_page(
-            client, config, project_id, [], from_date, to_date, 1, _PER_PAGE
-        )
+        first_page = _search_page(client, config, project_id, [], from_date, to_date, 1, _PER_PAGE)
     except AoneOpenApiError as error:
         if not state["first_done"]:
             raise

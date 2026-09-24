@@ -35,8 +35,10 @@ def validate_definition(task: ScheduledTask, schedule: ScheduledTaskSchedule) ->
     instruction = task.instruction_md
     if name is None or java_is_blank(name) or _utf16_len(name) > MAX_NAME_CHARS:
         _fail("任务名称不能为空且不能超过 256 个字符")
-    if instruction is None or java_is_blank(instruction) or len(instruction.encode("utf-8")) > (
-        MAX_INSTRUCTION_BYTES
+    if (
+        instruction is None
+        or java_is_blank(instruction)
+        or len(instruction.encode("utf-8")) > (MAX_INSTRUCTION_BYTES)
     ):
         _fail("任务指令不能为空或过长")
     if not _positive(task.squad_id) or not _positive(task.initial_agent_id):

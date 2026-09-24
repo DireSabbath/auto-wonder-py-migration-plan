@@ -52,10 +52,15 @@ async def apply_plan(
 ) -> Dispatch | None:
     """按交互调度上的员工创建评论返工。计划里的其他员工 id 只记日志。"""
     side = await session.get(Dispatch, side_dispatch_id)
-    if side is None or side.tenant_id != tenant_id or side.resume_mode not in {
-        "SIDE_INTERACTION",
-        "CANONICAL_INTERACTION",
-    }:
+    if (
+        side is None
+        or side.tenant_id != tenant_id
+        or side.resume_mode
+        not in {
+            "SIDE_INTERACTION",
+            "CANONICAL_INTERACTION",
+        }
+    ):
         return None
     proposed = plan.get("targetAgentId")
     if isinstance(proposed, int) and not isinstance(proposed, bool) and proposed != side.agent_id:
@@ -193,9 +198,7 @@ async def _pause_predecessor(
     try:
         state = await request_workitem_pause(session, tenant_id, workitem_id, wait_for, 0)
     except Exception as pause_failure:
-        await _recover_pause(
-            session, tenant_id, workitem_id, wait_for, rework_id, pause_failure
-        )
+        await _recover_pause(session, tenant_id, workitem_id, wait_for, rework_id, pause_failure)
         return
     if state.status == "PAUSED":
         await activate_latest_waiting(session, tenant_id, workitem_id, wait_for)
@@ -236,9 +239,7 @@ async def activate_latest_waiting(
     rows = await _workitem_rows(session, tenant_id, workitem_id)
     summary = "waitForDispatchId=" + str(paused_dispatch_id)
     waiting = [
-        row
-        for row in rows
-        if row.status == "WAITING_FOR_PAUSE" and row.result_summary == summary
+        row for row in rows if row.status == "WAITING_FOR_PAUSE" and row.result_summary == summary
     ]
     waiting.sort(key=lambda row: row.id, reverse=True)
     if len(waiting) == 0:

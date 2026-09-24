@@ -585,9 +585,7 @@ def _capability_config(skill: Skill) -> dict[str, object]:
     raise RuntimeError("capability config must be a JSON object: " + str(skill.id))
 
 
-async def _sdlc(
-    session: AsyncSession, tenant_id: int, step_id: int | None
-) -> dict[str, object]:
+async def _sdlc(session: AsyncSession, tenant_id: int, step_id: int | None) -> dict[str, object]:
     if step_id is None:
         return {
             "workflow": "interaction-only",

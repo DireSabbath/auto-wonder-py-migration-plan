@@ -42,8 +42,7 @@ PROBE_LOCK_TTL_SEC = 30
 ROUND_ROBIN_TTL_SEC = 7 * 24 * 60 * 60
 
 API_MODE_SUFFIX = (
-    "\n\n重要:你在API模式下运行,不能使用AskUserQuestion等交互工具。"
-    "直接用文字提问和回复。"
+    "\n\n重要:你在API模式下运行,不能使用AskUserQuestion等交互工具。直接用文字提问和回复。"
 )
 PLATFORM_PROMPT_SUFFIX = (
     "\n\n当前是平台管家对话，与你交谈的就是这个会话的唯一 Owner。"

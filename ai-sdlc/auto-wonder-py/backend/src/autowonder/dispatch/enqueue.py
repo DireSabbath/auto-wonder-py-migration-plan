@@ -24,9 +24,7 @@ ACTIVE_TURN_STATUSES = frozenset(
         "PAUSE_FAILED",
     }
 )
-INTERACTION_MODES = frozenset(
-    {"SIDE_INTERACTION", "CANONICAL_INTERACTION", "COMMENT_INTERACTION"}
-)
+INTERACTION_MODES = frozenset({"SIDE_INTERACTION", "CANONICAL_INTERACTION", "COMMENT_INTERACTION"})
 
 
 def workitem_idempotency_key(workitem_id: int, sdlc_step_id: int | None, attempt: int) -> str:
@@ -202,9 +200,7 @@ def effective_delivery_source(source: Dispatch) -> int:
     return source.id
 
 
-async def has_resumable_session(
-    session: AsyncSession, tenant_id: int, dispatch_id: int
-) -> bool:
+async def has_resumable_session(session: AsyncSession, tenant_id: int, dispatch_id: int) -> bool:
     """沿恢复来源查找仍带着提供者会话的检查点。"""
     current = dispatch_id
     visited: list[int] = []
@@ -213,9 +209,7 @@ async def has_resumable_session(
         if await _provider_session(session, tenant_id, current):
             return True
         dispatch = await session.scalar(
-            select(Dispatch)
-            .where(Dispatch.id == current, Dispatch.is_deleted == 0)
-            .limit(1)
+            select(Dispatch).where(Dispatch.id == current, Dispatch.is_deleted == 0).limit(1)
         )
         if dispatch is None or dispatch.tenant_id != tenant_id:
             return False
@@ -320,9 +314,7 @@ async def _by_key(session: AsyncSession, tenant_id: int, key: str) -> Dispatch |
     )
 
 
-async def _insert(
-    session: AsyncSession, tenant_id: int, key: str, row: Dispatch
-) -> Dispatch:
+async def _insert(session: AsyncSession, tenant_id: int, key: str, row: Dispatch) -> Dispatch:
     try:
         async with session.begin_nested():
             session.add(row)

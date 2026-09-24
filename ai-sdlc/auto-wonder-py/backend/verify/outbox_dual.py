@@ -251,9 +251,7 @@ class _Chain:
         )
         _disable(db_port, binding_id)
         creates = [
-            item
-            for item in _Handler.hits[before:]
-            if item["path"].endswith("/createComment")
+            item for item in _Handler.hits[before:] if item["path"].endswith("/createComment")
         ]
         self.facts[name + "Status"] = row
         self.facts[name + "Link"] = link

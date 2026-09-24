@@ -303,9 +303,7 @@ async def test_scheduled_requeue_publishes_runtime_frame(
     _use_redis(monkeypatch, redis)
     published: list[tuple[int, int]] = []
 
-    async def publish_runtime(
-        session: AsyncSession, workspace_id: int, run_id: int
-    ) -> None:
+    async def publish_runtime(session: AsyncSession, workspace_id: int, run_id: int) -> None:
         published.append((workspace_id, run_id))
 
     monkeypatch.setattr(

@@ -38,8 +38,10 @@ def _exact(step: object, step_id: str, hint: str) -> bool:
     if hint == "":
         return False
     lowered = hint.lower()
-    return lowered == code or lowered == _lower(_attr(step, "name")) or lowered == _lower(
-        _attr(step, "kind")
+    return (
+        lowered == code
+        or lowered == _lower(_attr(step, "name"))
+        or lowered == _lower(_attr(step, "kind"))
     )
 
 

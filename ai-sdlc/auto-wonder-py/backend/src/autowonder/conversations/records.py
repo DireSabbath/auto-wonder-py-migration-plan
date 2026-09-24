@@ -656,16 +656,20 @@ async def insert_event_chunk_if_absent(
     event: AgentConversationTurnEvent,
 ) -> None:
     """同一轮次的分片重复上报时忽略。"""
-    stmt = mysql_insert(AgentConversationTurnEvent).prefix_with("IGNORE").values(
-        tenant_id=event.tenant_id,
-        conversation_id=event.conversation_id,
-        turn_id=event.turn_id,
-        dispatch_attempt=event.dispatch_attempt,
-        event_seq=event.event_seq,
-        chunk_index=event.chunk_index,
-        chunk_count=event.chunk_count,
-        event_type=event.event_type,
-        payload_fragment=event.payload_fragment,
+    stmt = (
+        mysql_insert(AgentConversationTurnEvent)
+        .prefix_with("IGNORE")
+        .values(
+            tenant_id=event.tenant_id,
+            conversation_id=event.conversation_id,
+            turn_id=event.turn_id,
+            dispatch_attempt=event.dispatch_attempt,
+            event_seq=event.event_seq,
+            chunk_index=event.chunk_index,
+            chunk_count=event.chunk_count,
+            event_type=event.event_type,
+            payload_fragment=event.payload_fragment,
+        )
     )
     await session.execute(stmt)
 
@@ -675,14 +679,18 @@ async def insert_elicitation_if_absent(
     record: AgentConversationElicitation,
 ) -> None:
     """同一请求号的卡片只插一次。"""
-    stmt = mysql_insert(AgentConversationElicitation).prefix_with("IGNORE").values(
-        tenant_id=record.tenant_id,
-        conversation_id=record.conversation_id,
-        turn_id=record.turn_id,
-        request_id=record.request_id,
-        mode=record.mode,
-        message=record.message,
-        schema_json=record.schema_json,
-        status=record.status,
+    stmt = (
+        mysql_insert(AgentConversationElicitation)
+        .prefix_with("IGNORE")
+        .values(
+            tenant_id=record.tenant_id,
+            conversation_id=record.conversation_id,
+            turn_id=record.turn_id,
+            request_id=record.request_id,
+            mode=record.mode,
+            message=record.message,
+            schema_json=record.schema_json,
+            status=record.status,
+        )
     )
     await session.execute(stmt)

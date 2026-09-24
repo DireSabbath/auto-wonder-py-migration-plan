@@ -262,9 +262,7 @@ def root_failure_message(failure: BaseException) -> str:
     return message
 
 
-async def _published_version(
-    session: AsyncSession, dispatch: Dispatch
-) -> AgentVersion | None:
+async def _published_version(session: AsyncSession, dispatch: Dispatch) -> AgentVersion | None:
     agent = await session.scalar(
         select(Agent).where(Agent.id == dispatch.agent_id, Agent.is_deleted == 0).limit(1)
     )
@@ -358,8 +356,7 @@ async def _choose_executor(
     ):
         dispatch.resume_mode = "CANONICAL_INTERACTION"
         logger.info(
-            "dispatch fork degraded to canonical dispatchId=%s "
-            "sourceExecutorId=%s executorId=%s",
+            "dispatch fork degraded to canonical dispatchId=%s sourceExecutorId=%s executorId=%s",
             dispatch.id,
             preferred,
             executor_id,

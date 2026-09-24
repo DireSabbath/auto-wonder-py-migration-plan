@@ -554,9 +554,7 @@ def test_scheduled_task_upload_uses_task_workspace(monkeypatch: pytest.MonkeyPat
     assert response.status_code == 200
     assert response.json()["data"][0]["name"] == "requirements/requirements.md"
     assert token not in response.text
-    assert (
-        storage.get(_task_ref(TENANT_ID, TASK_ID, "requirements.md")) == b"# Requirements"
-    )
+    assert storage.get(_task_ref(TENANT_ID, TASK_ID, "requirements.md")) == b"# Requirements"
     audits = [row for row in session.added if isinstance(row, AuditLog)]
     assert audits[-1].action == "UPLOAD_SCHEDULED_TASK_REQUIREMENT_DOC"
     session.tasks[TASK_ID] = _task(TASK_ID, TENANT_ID, "ARCHIVED")
@@ -692,9 +690,7 @@ def _mint(session: _Session) -> str:
 
 
 def _mint_upload(session: _Session) -> str:
-    view = asyncio.run(
-        mint_upload_token(session, CredentialType.LONG_LIVED, USER_ID, WORKITEM_ID)
-    )
+    view = asyncio.run(mint_upload_token(session, CredentialType.LONG_LIVED, USER_ID, WORKITEM_ID))
     return view.token
 
 

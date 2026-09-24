@@ -386,9 +386,7 @@ class InboundFrameRouter:
             await _apply_ack(session, executor_session.tenant_id, dispatch_id)
             from autowonder.guidance.reports import deliver_queued_for_dispatch
 
-            await deliver_queued_for_dispatch(
-                session, executor_session.tenant_id, dispatch_id
-            )
+            await deliver_queued_for_dispatch(session, executor_session.tenant_id, dispatch_id)
 
     async def _progress(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
         dispatch_id = _long(payload, "dispatchId")
@@ -401,9 +399,7 @@ class InboundFrameRouter:
             await _apply_progress(session, executor_session.tenant_id, dispatch_id)
             from autowonder.guidance.reports import deliver_queued_for_dispatch
 
-            await deliver_queued_for_dispatch(
-                session, executor_session.tenant_id, dispatch_id
-            )
+            await deliver_queued_for_dispatch(session, executor_session.tenant_id, dispatch_id)
 
     async def _result(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
         dispatch_id = _long(payload, "dispatchId")
@@ -454,9 +450,7 @@ class InboundFrameRouter:
                     await requeue_delivered_for_dispatch(
                         session, executor_session.tenant_id, dispatch_id
                     )
-                    await activate_waiting_rework(
-                        session, executor_session.tenant_id, dispatch_id
-                    )
+                    await activate_waiting_rework(session, executor_session.tenant_id, dispatch_id)
                     await _send_result_ack(executor_session, dispatch_id, True)
                     return
                 if disposition == "REJECTED":
@@ -644,9 +638,7 @@ class InboundFrameRouter:
                 await requeue_delivered_for_dispatch(
                     session, executor_session.tenant_id, dispatch_id
                 )
-                await activate_waiting_rework(
-                    session, executor_session.tenant_id, dispatch_id
-                )
+                await activate_waiting_rework(session, executor_session.tenant_id, dispatch_id)
         await _send_result_ack(executor_session, dispatch_id, paused)
 
     async def _pause_failed(
@@ -1101,17 +1093,10 @@ async def _record_executor_failover(
             workitem_id=dispatch.workitem_id,
             dispatch_id=dispatch.id,
             agent_id=dispatch.agent_id,
-            event_id=(
-                "dispatch:"
-                + str(dispatch.id)
-                + ":executor-failover:"
-                + str(owned_version)
-            ),
+            event_id=("dispatch:" + str(dispatch.id) + ":executor-failover:" + str(owned_version)),
             event_type="dispatch.executor_failover",
             step_id=dispatch.sdlc_step_id,
-            message=(
-                "Runtime " + str(executor_id) + " 执行失败，正在切换其他在线 Runtime"
-            ),
+            message=("Runtime " + str(executor_id) + " 执行失败，正在切换其他在线 Runtime"),
             error=_truncate_code_points(detail_error, MAX_PROGRESS_TEXT_CHARS),
             detail_json={
                 "executorId": executor_id,

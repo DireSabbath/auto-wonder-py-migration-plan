@@ -114,8 +114,7 @@ async def record_task_result_report(
     status = debug_log.get("status")
     if not isinstance(status, str) or status not in _REPORT_STATUSES:
         logger.warning(
-            "debug log report ignored dispatchId=%s status=%s "
-            "reason=DEBUG_LOG_REPORT_BAD_STATUS",
+            "debug log report ignored dispatchId=%s status=%s reason=DEBUG_LOG_REPORT_BAD_STATUS",
             dispatch_id,
             status,
         )

@@ -348,12 +348,8 @@ async def task_health(
 ) -> ScheduledTaskHealthView:
     """近 30 天按完成时间统计。完成数包含跳过，成功数只算成功。"""
     since = naive_utc(utc_now() - timedelta(days=30))
-    completed = await session.scalar(
-        _health_count(workspace_id, task_id, HEALTH_COMPLETED, since)
-    )
-    succeeded = await session.scalar(
-        _health_count(workspace_id, task_id, ("SUCCEEDED",), since)
-    )
+    completed = await session.scalar(_health_count(workspace_id, task_id, HEALTH_COMPLETED, since))
+    succeeded = await session.scalar(_health_count(workspace_id, task_id, ("SUCCEEDED",), since))
     return ScheduledTaskHealthView(
         completed30d=int(cast(int, completed)),
         success30d=int(cast(int, succeeded)),

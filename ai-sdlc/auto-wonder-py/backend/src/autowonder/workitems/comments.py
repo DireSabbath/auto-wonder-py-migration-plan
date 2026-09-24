@@ -134,9 +134,7 @@ async def add_agent_comment(
     return _comment_view(comment), notices
 
 
-async def list_comments(
-    session: AsyncSession, workitem_id: int
-) -> list[CommentView]:
+async def list_comments(session: AsyncSession, workitem_id: int) -> list[CommentView]:
     """按创建时间倒序返回本工单的 WORKITEM 评论。"""
     owner = await _live(session, workitem_id)
     if owner is None or owner.tenant_id is None:

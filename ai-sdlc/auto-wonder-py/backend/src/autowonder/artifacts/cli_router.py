@@ -211,4 +211,4 @@ def _fastjson_fail(error: BizError) -> bytes:
 def _attachment(filename: str) -> str:
     escaped = filename.replace("\\", "\\\\").replace('"', '\\"')
     encoded = quote(filename, safe="")
-    return "attachment; filename=\"" + escaped + "\"; filename*=UTF-8''" + encoded
+    return 'attachment; filename="' + escaped + "\"; filename*=UTF-8''" + encoded

@@ -75,9 +75,7 @@ class AiSessionView(ApiModel):
 def should_persist_initial_user_message(request: CreateSessionRequest) -> bool:
     """仓库扫描的首条输入由扫描器自己生成，不落用户消息。"""
     return (
-        request.scene != "REPO_SCAN"
-        and request.input is not None
-        and request.input.strip() != ""
+        request.scene != "REPO_SCAN" and request.input is not None and request.input.strip() != ""
     )
 
 

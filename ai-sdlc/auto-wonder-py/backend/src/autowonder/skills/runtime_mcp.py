@@ -98,9 +98,7 @@ async def test_runtime(
 ) -> SkillConnectionTestResult:
     """向指定执行器下发测试帧，并等到结果或超时。"""
     executor = await session.scalar(
-        select(Executor)
-        .where(Executor.id == executor_id, Executor.is_deleted == 0)
-        .limit(1)
+        select(Executor).where(Executor.id == executor_id, Executor.is_deleted == 0).limit(1)
     )
     if executor is None or executor.tenant_id != tenant_id:
         raise BizError(ErrorCode.EXECUTOR_NOT_FOUND)

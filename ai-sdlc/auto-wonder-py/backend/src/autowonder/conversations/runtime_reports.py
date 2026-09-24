@@ -76,10 +76,7 @@ async def acknowledge_turn(
     conversation = await find_conversation(session, tenant_id, conversation_id)
     if conversation is None:
         return
-    if (
-        conversation.executor_id is not None
-        and executor_id != conversation.executor_id
-    ):
+    if conversation.executor_id is not None and executor_id != conversation.executor_id:
         logger.warning(
             "conversation ack rejected: executor %s != owner %s conversationId=%s",
             executor_id,

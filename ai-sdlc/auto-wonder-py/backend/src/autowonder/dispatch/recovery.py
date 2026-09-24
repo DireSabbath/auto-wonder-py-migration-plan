@@ -673,9 +673,7 @@ async def _cancel_locked(
         return
     if not force and await cancel_requested(session, dispatch.tenant_id, dispatch.id):
         return
-    pending_stop = (
-        dispatch.executor_id is not None and dispatch.status not in QUIET_BEFORE_STOP
-    )
+    pending_stop = dispatch.executor_id is not None and dispatch.status not in QUIET_BEFORE_STOP
     target = "CANCELED"
     if pending_stop and not force:
         target = "PAUSING"
@@ -886,18 +884,14 @@ async def _pending_stops(
     cutoff: datetime,
 ) -> list[tuple[DispatchRecovery, Dispatch | None]]:
     rows = (
-        await session.scalars(
-            select(DispatchRecovery).where(DispatchRecovery.stop_pending == 1)
-        )
+        await session.scalars(select(DispatchRecovery).where(DispatchRecovery.stop_pending == 1))
     ).all()
     chosen: list[tuple[DispatchRecovery, Dispatch | None]] = []
     for row in rows:
         if row.last_sent_at is not None and row.last_sent_at >= cutoff:
             continue
         dispatch = await find_dispatch(session, row.dispatch_id)
-        if executor_id is not None and (
-            dispatch is None or dispatch.executor_id != executor_id
-        ):
+        if executor_id is not None and (dispatch is None or dispatch.executor_id != executor_id):
             continue
         chosen.append((row, dispatch))
     chosen.sort(key=lambda item: _sent_order(item[0]))
