@@ -211,15 +211,18 @@ def test_bad_channel_is_dropped_and_logged(
 
 
 def test_debug_log_routes_match_java_and_require_login() -> None:
-    """查询路径已注册。直传签发还没有 daemon 鉴权，因此不注册。"""
+    """查询路径要求登录。直传签发已注册，并且不走会话 JWT。"""
     client = TestClient(create_app())
     paths = client.app.openapi()["paths"]
     assert "get" in paths["/api/debug-logs"]
     assert "post" not in paths["/api/debug-logs"]
-    assert "/api/daemon/dispatches/{dispatchId}/debug-log-upload" not in paths
+    upload_path = "/api/daemon/dispatches/{dispatchId}/debug-log-upload"
+    assert "post" in paths[upload_path]
     response = client.get("/api/debug-logs", params={"sourceType": "WORKITEM", "sourceId": 1})
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
+    issued = client.post("/api/daemon/dispatches/1/debug-log-upload")
+    assert issued.status_code != 401
 
 
 def _sql(statement: object) -> str:
