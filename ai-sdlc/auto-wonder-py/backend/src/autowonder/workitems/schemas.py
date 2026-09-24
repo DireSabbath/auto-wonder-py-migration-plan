@@ -338,6 +338,14 @@ class WorkitemUsageView(ApiModel):
     runs: list[WorkitemUsageRunView]
 
 
+class RecoveryControlRequest(ApiModel):
+    """关闭、重开或取消交付。缺省 ``dispatchId`` 为 0，``force`` 为 false。"""
+
+    action: str | None = None
+    dispatch_id: int = 0
+    force: bool = False
+
+
 class DeliveryProgressView(ApiModel):
     """工单交付进度。没有正数 credits 时 ``totalUsage`` 为空。"""
 

@@ -92,6 +92,14 @@ class Settings(BaseSettings):
         default=3_600_000,
         validation_alias="AUTOWONDER_WORKITEM_STUCK_THRESHOLD_MS",
     )
+    dispatch_recovery_package_retries: int = Field(
+        default=3,
+        validation_alias="AUTOWONDER_DISPATCH_RECOVERY_PACKAGE_RETRIES",
+    )
+    dispatch_recovery_retry_delay_ms: int = Field(
+        default=30_000,
+        validation_alias="AUTOWONDER_DISPATCH_RECOVERY_RETRY_DELAY_MS",
+    )
 
     @property
     def resolved_database_url(self) -> str:

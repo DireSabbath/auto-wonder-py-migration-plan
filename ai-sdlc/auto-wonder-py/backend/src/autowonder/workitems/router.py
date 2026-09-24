@@ -10,6 +10,9 @@ from autowonder.core.context import current_user_id, current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.db.session import get_session
+from autowonder.dispatch.continue_run import continue_workitem
+from autowonder.dispatch.pause_request import request_workitem_pause
+from autowonder.dispatch.recovery import cancel, close, reopen, state
 from autowonder.guidance.service import attach_interaction_statuses, create_for_comment
 from autowonder.workitems.comments import add_comment, list_comments, publish_mentions
 from autowonder.workitems.participants import get_mention_candidates, get_participants
@@ -18,6 +21,7 @@ from autowonder.workitems.schemas import (
     AddCommentRequest,
     AssignRequest,
     CreateWorkitemRequest,
+    RecoveryControlRequest,
     ScheduledStartRequest,
     TransitionRequest,
     UpdateContentRequest,
@@ -302,6 +306,78 @@ async def delivery_progress_item(
 ) -> dict[str, Any]:
     """交付进度。步骤耗时来自运行时事件，总耗时来自正式派发。"""
     return ok(await get_delivery_progress(session, id, _workspace_id()))
+
+
+@router.get(
+    "/{workitemId}/recovery",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_ONLY, "查看调度恢复"))],
+)
+async def recovery_state(
+    workitemId: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """交付是否关闭，以及每条派发的恢复阶段。"""
+    return ok(await state(session, _workspace_id(), workitemId))
+
+
+@router.post(
+    "/{workitemId}/recovery",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "恢复或关闭交付"))],
+)
+async def recovery_control(
+    workitemId: int,
+    body: RecoveryControlRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """关闭、重开或取消。未知 action 返回冲突。"""
+    if body.action is None:
+        raise BizError(ErrorCode.CONFLICT, "action required")
+    tenant_id = _workspace_id()
+    user_id = _user_id()
+    if body.action == "close":
+        data = await close(session, tenant_id, workitemId, user_id, body.force)
+    elif body.action == "reopen":
+        data = await reopen(session, tenant_id, workitemId, user_id)
+    elif body.action == "cancel":
+        data = await cancel(
+            session, tenant_id, workitemId, body.dispatch_id, user_id, body.force
+        )
+    else:
+        raise BizError(ErrorCode.CONFLICT, "不支持的恢复操作")
+    return ok(data)
+
+
+@router.post(
+    "/{workitemId}/dispatches/{dispatchId}/pause",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "暂停调度"))],
+)
+async def pause_dispatch_item(
+    workitemId: int,
+    dispatchId: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """请求暂停。执行器通道未接通时，状态落成 PAUSE_FAILED。"""
+    dispatch = await request_workitem_pause(
+        session, _workspace_id(), workitemId, dispatchId, _user_id()
+    )
+    return ok({"dispatchId": dispatch.id, "status": dispatch.status})
+
+
+@router.post(
+    "/{workitemId}/dispatches/{dispatchId}/continue",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "继续调度"))],
+)
+async def continue_dispatch_item(
+    workitemId: int,
+    dispatchId: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """继续失败或暂停的派发。新行保持 PENDING，直到调度主环启动。"""
+    created = await continue_workitem(
+        session, _workspace_id(), workitemId, dispatchId, _user_id()
+    )
+    return ok(
+        {"dispatchId": created.id, "attempt": created.attempt, "status": created.status}
+    )
 
 
 @router.get("/{id}/participants")

@@ -5,7 +5,7 @@ WebSocket 接入尚未迁入时，这里只保留进程内会话集合：没有�
 ``isAvailable`` 还要求未删除且不在故障转移冷却中，目前没有这些登记，调度侧一律不可用。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _ONLINE: set[int] = set()
 
@@ -20,6 +20,7 @@ class DispatchSnapshot:
     inventory_error: str | None
     running_dispatch_ids: frozenset[int]
     running_conversation_turn_ids: frozenset[int]
+    owned_dispatch_ids: frozenset[int] = field(default_factory=frozenset)
 
 
 def is_online(executor_id: int) -> bool:
