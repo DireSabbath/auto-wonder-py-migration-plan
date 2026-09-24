@@ -388,8 +388,9 @@ async def test_manifest_truncates_hints_by_utf16_units_and_null_relation_text() 
     assert isinstance(skill_cards, list)
     hint = skill_cards[0]["triggerHint"]
     assert isinstance(hint, str)
-    assert len(hint.encode("utf-16-le")) // 2 == 160
-    assert hint.encode("utf-16-le")[-2:] == emoji.encode("utf-16-le")[:2]
+    encoded = hint.encode("utf-16-le", errors="surrogatepass")
+    assert len(encoded) // 2 == 160
+    assert encoded[-2:] == emoji.encode("utf-16-le")[:2]
     relation_cards = relation_only["cards"]
     assert isinstance(relation_cards, list)
     assert relation_cards[0]["name"] == "null null null"
