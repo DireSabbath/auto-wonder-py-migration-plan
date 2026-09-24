@@ -1,7 +1,7 @@
 """调度取消意图、工单关闭围栏，以及评论投递的终态投影。
 
-暂停帧发不出去时只记下 ``stop_pending``，由对账再送。调度主环尚未调用
-``ready`` / ``retry_packaging``，这些函数仍按 Java 的语义保留。
+暂停帧发不出去时只记下 ``stop_pending``，由对账再送。``ready`` 和
+``retry_packaging`` 由待派发主环调用，语义与 Java 一致。
 """
 
 import logging

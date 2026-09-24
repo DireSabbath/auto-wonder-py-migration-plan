@@ -9,6 +9,7 @@ from autowonder.db.rows import rowcount
 from autowonder.dispatch.enqueue import enqueue_interaction_rework, is_interaction
 from autowonder.dispatch.models import Dispatch
 from autowonder.dispatch.pause_request import request_workitem_pause
+from autowonder.dispatch.pending import drive_remembered, remember_pending
 from autowonder.guidance.service import _first_step, _sdlc_id
 from autowonder.guidance.steps import resolve_step
 from autowonder.sdlcs.models import SdlcStep
@@ -96,6 +97,7 @@ async def apply_plan(
         return None
     rework, wait_for = decision
     await session.commit()
+    await drive_remembered(session)
     if wait_for is not None and rework.status == "WAITING_FOR_PAUSE":
         await _pause_predecessor(session, tenant_id, side.workitem_id, wait_for, rework.id)
     return rework
@@ -245,6 +247,7 @@ async def activate_latest_waiting(
         await _cancel_waiting(session, tenant_id, older.id)
     await _activate(session, tenant_id, waiting[0])
     await session.commit()
+    await drive_remembered(session)
 
 
 async def _activate(session: AsyncSession, tenant_id: int, rework: Dispatch) -> None:
@@ -379,7 +382,10 @@ async def _release(session: AsyncSession, tenant_id: int, dispatch_id: int) -> b
         )
         .values(status="PENDING", version=Dispatch.version + 1, modifier_id=0)
     )
-    return rowcount(result) == 1
+    released = rowcount(result) == 1
+    if released:
+        remember_pending(session, dispatch_id)
+    return released
 
 
 async def _lock_workitem(

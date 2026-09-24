@@ -13,6 +13,7 @@ from autowonder.audits.service import AuditRecord, record_required
 from autowonder.core.result import dump_data
 from autowonder.db.session import get_session
 from autowonder.debuglogs.sanitizer import java_is_blank
+from autowonder.dispatch.pending import drive_remembered
 from autowonder.guidance.service import create_for_comment
 from autowonder.scheduledtasks.capability import require_scheduled_capability
 from autowonder.scheduledtasks.comments import add_run_agent_comment, publish_run_mentions
@@ -114,6 +115,7 @@ async def submit_daemon_comment(
         )
         await _record_comment(session, auth, dispatch_id, content_md)
         await session.commit()
+        await drive_remembered(session)
         await publish_mentions(session, workitem_notices)
         return daemon_http(200, dump_data(view))
     return daemon_http(409, None)

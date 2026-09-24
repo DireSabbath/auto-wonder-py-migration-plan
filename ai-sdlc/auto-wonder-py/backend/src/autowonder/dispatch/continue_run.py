@@ -1,4 +1,4 @@
-"""从失败、取消或暂停的工单派发再开一条。新行保持 PENDING，主环尚未拉起。"""
+"""从失败、取消或暂停的工单派发再开一条，并立刻尝试打包下发。"""
 
 import logging
 import uuid
@@ -14,6 +14,7 @@ from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.locks import release_lock, try_acquire_lock
 from autowonder.dispatch.enqueue import is_interaction
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.pending import run_pending
 from autowonder.dispatch.recovery import (
     _copy_dispatch,
     execution_source,
@@ -205,10 +206,11 @@ async def _continue_locked(
             raise
         return winner
     logger.info(
-        "dispatch continue created dispatchId=%s sourceId=%s; run loop is not started",
+        "dispatch continue created dispatchId=%s sourceId=%s",
         recovery.id,
         target.id,
     )
+    await run_pending(session, recovery.id)
     return recovery
 
 

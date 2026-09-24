@@ -21,7 +21,11 @@ from autowonder.db.session import get_session
 from autowonder.dispatch.models import Dispatch, DispatchRuntimeEvent
 from autowonder.dispatch.pause_request import PAUSEABLE
 from autowonder.dispatch.recovery import TERMINAL as DISPATCH_TERMINAL
-from autowonder.dispatch.recovery import force_cancel_scheduled_run, update_status
+from autowonder.dispatch.recovery import (
+    execution_source,
+    force_cancel_scheduled_run,
+    update_status,
+)
 from autowonder.executors.models import Executor
 from autowonder.executors.registry import is_online
 from autowonder.scheduledtasks.capability import require_scheduled_capability
@@ -289,6 +293,31 @@ async def _finish(
     run.finished_at = now_local()
     run.version = (run.version or 0) + 1
     return True
+
+
+async def complete_from_dispatch(
+    session: AsyncSession,
+    dispatch: Dispatch,
+    success: bool,
+    summary: str | None,
+    error: str | None,
+) -> None:
+    """调度终态回写定时运行。非运行来源、缺失或已终态的运行保持原状。"""
+    if execution_source(dispatch) != "SCHEDULED_TASK_RUN":
+        return
+    run = await session.scalar(
+        select(ScheduledTaskRun)
+        .where(
+            ScheduledTaskRun.workspace_id == dispatch.tenant_id,
+            ScheduledTaskRun.id == dispatch.workitem_id,
+        )
+        .limit(1)
+    )
+    if run is None or _terminal(run.status):
+        return
+    target = "SUCCEEDED" if success else "FAILED"
+    await _finish(session, run, target, summary, error, 0)
+    await session.commit()
 
 
 async def _require_run(session: AsyncSession, workspace_id: int, run_id: int) -> ScheduledTaskRun:

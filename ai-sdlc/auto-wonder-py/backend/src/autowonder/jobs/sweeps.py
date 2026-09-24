@@ -25,6 +25,11 @@ from autowonder.core.redis import redis_client
 from autowonder.db.rows import rowcount
 from autowonder.db.session import SessionLocal
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.pending import (
+    fail_and_drive,
+    on_unacknowledged_timeout,
+    run_pending,
+)
 from autowonder.dispatch.recovery import reconcile, retry_packaging, transition
 from autowonder.executors.catalog import (
     catalog_snapshot_json,
@@ -90,7 +95,6 @@ _CATALOG_ACTIVE = ("PACKAGING", "DISPATCHED", "ACKED", "RUNNING", "PAUSING")
 _CATALOG_WAIT_SECONDS = 20
 _CATALOG_FEATURE = "QODER_MODEL_CATALOG_V1"
 _CATALOG_KINDS = {"qoder": "QODER_CLI", "qodercn": "QODER_CN_CLI"}
-_ACK_TIMEOUT = "DISPATCH_ACK_TIMEOUT: 接单确认超时，旧执行已隔离，请确认外部操作后重试"
 _RUN_TIMEOUT = "TIMEOUT"
 _PAUSE_TIMEOUT = "PAUSE_CONFIRMATION_MISSING: 暂停确认超时，平台未收到有效暂停检查点"
 _READBACK_UNAVAILABLE = "readback unavailable for connector/event"
@@ -976,18 +980,22 @@ async def _dispatch_sweep() -> None:
             len(loaded["pausing"]),
             len(loaded["inflight"]),
         )
+        for row in loaded["pending"]:
+            try:
+                await run_pending(session, row.id)
+            except Exception:
+                logger.warning(
+                    "compensation re-drive failed dispatchId=%s",
+                    row.id,
+                    exc_info=True,
+                )
         for row in loaded["packaging"]:
             try:
                 accepted = await retry_packaging(session, row, "PACKAGING_DEADLINE_EXCEEDED")
                 if not accepted:
-                    await transition(
+                    await fail_and_drive(
                         session,
                         row,
-                        "FAILED",
-                        None,
-                        None,
-                        None,
-                        None,
                         "TASK_PACKAGE_RETRIES_EXHAUSTED: 打包重试次数已耗尽",
                     )
             except Exception:
@@ -998,7 +1006,7 @@ async def _dispatch_sweep() -> None:
                 )
         for row in loaded["unacknowledged"]:
             try:
-                await transition(session, row, "TIMEOUT", None, None, None, None, _ACK_TIMEOUT)
+                await on_unacknowledged_timeout(session, row)
             except Exception:
                 logger.warning(
                     "compensation unacknowledged requeue failed dispatchId=%s",

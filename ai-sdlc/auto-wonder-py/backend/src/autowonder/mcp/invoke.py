@@ -615,6 +615,9 @@ async def invoke_tool(
         result = await _invoke(session, context, name, safe_args)
         await _audit_run_tool(session, context, name, result, None)
         await session.commit()
+        from autowonder.dispatch.pending import drive_remembered
+
+        await drive_remembered(session)
         return result
     except Exception as failure:
         schema_not_ready = (

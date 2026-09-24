@@ -18,6 +18,7 @@ from autowonder.dispatch.handoff_rules import (
     scheduled_target_agent_id,
 )
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.pending import run_pending
 from autowonder.scheduledtasks.models import ScheduledTaskRun
 from autowonder.users.models import User
 from autowonder.workspaces.models import OrgMember
@@ -72,6 +73,7 @@ async def start_run(workspace_id: int, run_id: int, actor_id: int) -> None:
                     "Run waiting-executor transition was lost",
                 )
             await session.commit()
+            await run_pending(session, dispatch.id)
         except BizError as error:
             await session.rollback()
             if error.code == ErrorCode.SCHEDULED_TASK_INVALID_STATE.code:
@@ -355,6 +357,7 @@ async def handoff_scheduled(
         return rejected_result("RUN_NOT_FOUND", "scheduled run not found")
     replay = await _handoff_replay(session, source)
     if replay is not None:
+        await _drive_if_pending(session, replay)
         return agent_result(replay.agent_id, replay.id)
     try:
         snapshot = _snapshot(run)
@@ -380,6 +383,7 @@ async def _handoff_frozen_agent(
 ) -> HandoffResult:
     replay = await _handoff_replay(session, source)
     if replay is not None:
+        await _drive_if_pending(session, replay)
         return agent_result(replay.agent_id, replay.id)
     if (
         source.status != "SUCCEEDED"
@@ -418,7 +422,13 @@ async def _handoff_frozen_agent(
     downstream = await _enqueue_scheduled_handoff(session, run, source, agent_id, step_id)
     await _pin_handoff_version(session, downstream, version_id)
     await session.commit()
+    await run_pending(session, downstream.id)
     return agent_result(agent_id, downstream.id)
+
+
+async def _drive_if_pending(session: AsyncSession, dispatch: Dispatch) -> None:
+    if dispatch.status == "PENDING":
+        await run_pending(session, dispatch.id)
 
 
 async def _handoff_replay(session: AsyncSession, source: Dispatch) -> Dispatch | None:

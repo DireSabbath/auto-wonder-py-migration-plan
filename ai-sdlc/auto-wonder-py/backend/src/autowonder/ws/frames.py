@@ -197,7 +197,7 @@ def build_task_dispatch_frame(
     idempotency_key: str,
     agent_id: int,
     agent_version_id: int,
-    sdlc_step_id: int,
+    sdlc_step_id: int | None,
     attempt: int,
     download_url: str,
     md5: str,

@@ -87,6 +87,62 @@ async def enqueue_workitem(
     return winner
 
 
+async def enqueue_assignment(
+    session: AsyncSession,
+    workspace_id: int,
+    workitem_id: int,
+    sdlc_step_id: int,
+    agent_id: int,
+    assignment_version: int,
+    user_id: int,
+) -> Dispatch:
+    """按指派版本幂等插入 PENDING。尝试次数取该步骤当前最大值加一。"""
+    key = (
+        "assignment:"
+        + str(workitem_id)
+        + ":"
+        + str(sdlc_step_id)
+        + ":"
+        + str(agent_id)
+        + ":"
+        + str(assignment_version)
+    )
+    existing = await _by_key(session, workspace_id, key)
+    if existing is not None:
+        logger.info("assignment enqueue idempotent hit key=%s", key)
+        return existing
+    attempt = await _next_attempt(session, workspace_id, workitem_id, sdlc_step_id)
+    row = Dispatch(
+        tenant_id=workspace_id,
+        source_type="WORKITEM",
+        workitem_id=workitem_id,
+        sdlc_step_id=sdlc_step_id,
+        agent_id=agent_id,
+        status="PENDING",
+        attempt=attempt,
+        idempotency_key=key,
+        creator_id=user_id,
+        modifier_id=user_id,
+        version=0,
+        is_deleted=0,
+    )
+    previous = await _latest_formal(session, workspace_id, workitem_id)
+    if previous is not None:
+        row.delivery_source_dispatch_id = effective_delivery_source(previous)
+    created = await _insert(session, workspace_id, key, row)
+    if created is row:
+        logger.info(
+            "assignment dispatch enqueued dispatchId=%s workitemId=%s stepId=%s "
+            "agentId=%s attempt=%s",
+            created.id,
+            workitem_id,
+            sdlc_step_id,
+            agent_id,
+            attempt,
+        )
+    return created
+
+
 async def enqueue_comment_interaction(
     session: AsyncSession,
     workspace_id: int,

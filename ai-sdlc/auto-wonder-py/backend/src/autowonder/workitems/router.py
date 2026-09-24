@@ -12,6 +12,7 @@ from autowonder.core.result import ok
 from autowonder.db.session import get_session
 from autowonder.dispatch.continue_run import continue_workitem
 from autowonder.dispatch.pause_request import request_workitem_pause
+from autowonder.dispatch.pending import drive_remembered
 from autowonder.dispatch.recovery import cancel, close, reopen, state
 from autowonder.guidance.service import attach_interaction_statuses, create_for_comment
 from autowonder.workitems.comments import add_comment, list_comments, publish_mentions
@@ -272,6 +273,7 @@ async def add_comment_item(
         _user_id(),
     )
     await session.commit()
+    await drive_remembered(session)
     await publish_mentions(session, notices)
     return ok(comment)
 

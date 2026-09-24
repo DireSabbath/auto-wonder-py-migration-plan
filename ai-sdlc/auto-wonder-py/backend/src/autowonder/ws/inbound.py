@@ -19,6 +19,7 @@ from autowonder.db.session import SessionLocal
 from autowonder.debuglogs.issue import record_task_result_report
 from autowonder.dispatch.checkpoint import CheckpointEngine, SqlCheckpointRepo
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.pending import drain_pending
 from autowonder.dispatch.recovery import execution_source
 from autowonder.scheduledtasks.capability import require_scheduled_capability
 from autowonder.ws.frames import task_handoff_result, task_result_ack
@@ -354,6 +355,16 @@ class InboundFrameRouter:
                     started_at,
                     payload.get("restartRequestId"),
                 )
+        try:
+            async with SessionLocal() as session:
+                await drain_pending(session, executor_session.agent_id)
+        except Exception:
+            logger.warning(
+                "heartbeat drain failed executorId=%s agentId=%s",
+                executor_session.executor_id,
+                executor_session.agent_id,
+                exc_info=True,
+            )
 
     async def _ack(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
         dispatch_id = _long(payload, "dispatchId")
@@ -500,6 +511,16 @@ class InboundFrameRouter:
                         _long(payload, "workitemId"),
                         dispatch_id,
                         embedded,
+                    )
+            if accepted:
+                try:
+                    await drain_pending(session, executor_session.agent_id)
+                except Exception:
+                    logger.error(
+                        "result drain failed dispatchId=%s agentId=%s",
+                        dispatch_id,
+                        executor_session.agent_id,
+                        exc_info=True,
                     )
         await _send_result_ack(executor_session, dispatch_id, accepted)
 

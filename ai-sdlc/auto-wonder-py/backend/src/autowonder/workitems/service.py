@@ -15,7 +15,7 @@ from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.page import PageResult
 from autowonder.db.rows import rowcount
 from autowonder.debuglogs.sanitizer import java_is_blank
-from autowonder.dispatch.assignment import on_workitem_assigned
+from autowonder.dispatch.assignment import drive_queued, on_workitem_assigned
 from autowonder.dispatch.models import Dispatch
 from autowonder.integrations.models import ExternalWorkitemLink
 from autowonder.scheduledtasks.models import ScheduledTask, ScheduledTaskRun
@@ -536,6 +536,7 @@ async def assign_as(
             if changed == 0:
                 raise BizError(ErrorCode.WORKITEM_VERSION_CONFLICT)
             reloaded = await _reload(session, workitem_id)
+    queued_dispatch = None
     if assignee_type == "AGENT" and assignee_ref is not None:
         planned = reloaded.scheduled_start_at
         deferred = planned is not None and is_after(planned, now_local())
@@ -546,7 +547,8 @@ async def assign_as(
                 reloaded.scheduled_start_at,
             )
         else:
-            on_workitem_assigned(
+            queued_dispatch = await on_workitem_assigned(
+                session,
                 WorkitemAssigned(
                     tenant_id,
                     workitem_id,
@@ -554,7 +556,7 @@ async def assign_as(
                     assignee_ref,
                     reloaded.version,
                     modifier_user_id,
-                )
+                ),
             )
     if (
         assignee_type == "HUMAN"
@@ -577,6 +579,7 @@ async def assign_as(
             )
         )
     await session.commit()
+    await drive_queued(queued_dispatch)
     return await _detail(session, workitem_id)
 
 
@@ -610,8 +613,10 @@ async def update_scheduled_start(
                 raise BizError(ErrorCode.WORKITEM_NOT_FOUND)
             return await _render_detail(session, fresh)
         fresh = await _reload(session, workitem_id)
+        queued_dispatch = None
         if execute_now and fresh.assignee_type == "AGENT" and fresh.assignee_ref is not None:
-            on_workitem_assigned(
+            queued_dispatch = await on_workitem_assigned(
+                session,
                 WorkitemAssigned(
                     tenant_id,
                     workitem_id,
@@ -619,9 +624,10 @@ async def update_scheduled_start(
                     fresh.assignee_ref,
                     fresh.version,
                     user_id,
-                )
+                ),
             )
         await session.commit()
+        await drive_queued(queued_dispatch)
         return await _detail(session, workitem_id)
     if workitem.assignee_type != "AGENT" or workitem.assignee_ref is None:
         raise BizError(ErrorCode.PARAM_INVALID)

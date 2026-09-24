@@ -24,6 +24,7 @@ from autowonder.dispatch.handoff_rules import (
     superseded_by_interaction_rework,
 )
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.pending import run_pending
 from autowonder.dispatch.recovery import fenced
 from autowonder.guidance.service import _first_step, _sdlc_id
 from autowonder.scheduledtasks.orchestrator import handoff_scheduled
@@ -82,6 +83,8 @@ async def handle(
         )
     existing = await find_handoff_by_source(session, tenant_id, dispatch_id)
     if existing is not None:
+        if existing.status == "PENDING":
+            await run_pending(session, existing.id)
         return agent_result(existing.agent_id, existing.id)
     if target_type is not None and target_type.upper() == "HUMAN":
         return await _human(
@@ -215,6 +218,7 @@ async def _agent(
         session, tenant_id, workitem_id, first.id, agent_id, dispatch_id, _SYSTEM_USER_ID
     )
     await session.commit()
+    await run_pending(session, created.id)
     return agent_result(agent_id, created.id)
 
 
