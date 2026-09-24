@@ -229,13 +229,17 @@ def test_list_sql_matches_source_aware_dao() -> None:
 
 
 def test_artifact_routes_require_login() -> None:
-    """列表、下载和预览已注册。需求文档接口仍未挂上。未登录返回 401。"""
+    """产物和需求文档接口已注册。未登录返回 401。"""
     client = TestClient(create_app())
     paths = client.app.openapi()["paths"]
     assert "get" in paths["/api/workitems/{id}/artifacts"]
     assert "get" in paths["/api/artifacts/{id}/download"]
     assert "get" in paths["/api/artifacts/{id}/preview"]
-    assert "/api/workitems/{id}/requirement-documents" not in paths
+    documents = paths["/api/workitems/{id}/requirement-documents"]
+    assert "get" in documents
+    assert "post" in documents
+    removed = paths["/api/workitems/{id}/requirement-documents/{artifactId}"]
+    assert "delete" in removed
     listed = client.get("/api/workitems/3/artifacts")
     assert listed.status_code == 401
     assert listed.json()["code"] == "10401"
@@ -243,6 +247,9 @@ def test_artifact_routes_require_login() -> None:
     assert download.status_code == 401
     preview = client.get("/api/artifacts/1/preview")
     assert preview.status_code == 401
+    documents = client.get("/api/workitems/3/requirement-documents")
+    assert documents.status_code == 401
+    assert documents.json()["code"] == "10401"
 
 
 def _reject_preview(row: Artifact, storage: "_Storage") -> None:
