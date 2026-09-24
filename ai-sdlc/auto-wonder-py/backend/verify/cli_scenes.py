@@ -32,7 +32,7 @@ if "请扫描本地仓库" in prompt:
         "downstreams": "db",
         "summaryMd": "scanned",
     }
-elif "SDLC workflow JSON" in prompt:
+elif "SDLC workflow" in prompt:
     body = {
         "name": "cli-scene-sdlc",
         "description": "generated",
