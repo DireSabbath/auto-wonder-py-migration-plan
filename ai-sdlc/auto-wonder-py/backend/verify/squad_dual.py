@@ -2,6 +2,10 @@
 
 页面时间线仍由 ``squad-flow`` 对着 Python 前端核对。
 这里只比较两边的角色、派发、交真人、负责人和时间线。
+
+Java 的 ``AgentDao.insert`` 会把未赋值的 ``kind`` 写成 NULL。
+列定义虽有默认值 ``STANDARD``，显式 NULL 仍会被拒绝。
+对拍前在 Java 库上把空的 ``kind`` 补成 ``STANDARD``，与 Python 套用模板时写入的值一致。
 """
 
 from verify.squad_flow import squad_flow
