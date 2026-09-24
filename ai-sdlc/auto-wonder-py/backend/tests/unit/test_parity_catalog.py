@@ -56,6 +56,7 @@ def test_normalize_document_drops_volatile_fields_and_stack_urls() -> None:
             "request_id": "req",
             "token": "secret",
             "gmtCreate": 1,
+            "timestamp": "2026-09-24T16:01:07.963+00:00",
             "name": "保持",
             "mcpBaseUrl": "http://localhost:7001/api/mcp",
             "items": [{"id": 3, "updatedAt": 4, "label": "甲"}],

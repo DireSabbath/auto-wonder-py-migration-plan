@@ -87,14 +87,11 @@ async def read_setting(key: str, session: AsyncSession = Depends(get_session)) -
 @router.put("/settings/{key}")
 async def put_setting(
     key: str,
+    body: UpsertUserSettingRequest,
     session: AsyncSession = Depends(get_session),
-    body: UpsertUserSettingRequest | None = None,
 ) -> dict[str, Any]:
-    """写入一条偏好。请求体缺失时清空取值。"""
-    value_json = None
-    if body is not None:
-        value_json = body.value_json
-    return ok(await upsert_user_setting(session, _user_id(), key, value_json))
+    """写入一条偏好。缺少正文时与 ``@RequestBody`` 一样是参数不合法。"""
+    return ok(await upsert_user_setting(session, _user_id(), key, body.value_json))
 
 
 @router.delete("/settings/{key}")

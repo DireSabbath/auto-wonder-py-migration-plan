@@ -23,13 +23,14 @@ def _skill(
     description: str,
     tools: list[str],
 ) -> PlatformSkillView:
+    # Fastjson 写出 Map.of 时的键序，与 Java ``PlatformSkillCatalog`` 的 installSpec 一致。
     spec = json.dumps(
         {
-            "kind": "codex-skill",
-            "id": skill_id,
-            "mcpServer": "autowonder",
             "tools": tools,
+            "id": skill_id,
             "instructions": description,
+            "mcpServer": "autowonder",
+            "kind": "codex-skill",
         },
         ensure_ascii=False,
         separators=(",", ":"),

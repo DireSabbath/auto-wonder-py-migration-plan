@@ -1,5 +1,6 @@
 """个人 MCP 令牌、调度凭证、会话凭证和平台技能目录。"""
 
+import json
 from datetime import datetime
 
 import pytest
@@ -228,6 +229,13 @@ async def test_conversation_token_follows_the_active_binding(
 def test_platform_skills_and_tool_names() -> None:
     """平台技能按固定 id 列出，工具目录有 112 个名称。"""
     skills = list_platform_skills()
+    assert list(json.loads(skills[0].install_spec)) == [
+        "tools",
+        "id",
+        "instructions",
+        "mcpServer",
+        "kind",
+    ]
     assert [skill.id for skill in skills] == [
         "autowonder-workitem-operator",
         "autowonder-sdlc-manager",

@@ -150,6 +150,38 @@ def test_missing_json_body_uses_the_java_param_envelope() -> None:
     assert usage.json()["code"] == "10001"
 
 
+def test_argument_binding_precedes_workspace_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """登录但没有工作空间时，缺参先于 11001，未映射的 Aone 控制器是 404。"""
+    monkeypatch.setenv("AUTOWONDER_JWT_SECRET", "autowonder-dev-jwt-secret-32-bytes")
+    get_settings.cache_clear()
+    token = sign_access(TokenPayload(user_id=42, workspace_id=None, jti="binding-order"))
+    headers = {"Authorization": "Bearer " + token}
+    with TestClient(create_app()) as client:
+        _assert_binding_order(client, headers)
+
+
+def _assert_binding_order(client: TestClient, headers: dict[str, str]) -> None:
+    missing_body = client.post("/api/agents", headers=headers)
+    assert missing_body.status_code == 400
+    assert missing_body.json()["code"] == "10001"
+    missing_query = client.get("/api/debug-logs", headers=headers)
+    assert missing_query.status_code == 200
+    assert missing_query.json()["code"] == "10000"
+    listed = client.get("/api/agents", headers=headers)
+    assert listed.status_code == 403
+    assert listed.json()["code"] == "11001"
+    setting = client.put("/api/users/me/settings/theme", headers=headers)
+    assert setting.status_code == 400
+    assert setting.json()["code"] == "10001"
+    missing_controller = client.get("/api/integrations/aone/bindings", headers=headers)
+    assert missing_controller.status_code == 404
+    body = missing_controller.json()
+    assert body["status"] == 404
+    assert body["error"] == "Not Found"
+    assert body["path"] == "/api/integrations/aone/bindings"
+    assert body["timestamp"].endswith("+00:00")
+
+
 def test_hello_envelope() -> None:
     client = TestClient(create_app())
     response = client.get("/api/hello")

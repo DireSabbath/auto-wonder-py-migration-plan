@@ -2,11 +2,15 @@
 
 import inspect
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException
+from starlette.responses import Response
 
 from autowonder.api.access import access_denied_body
 from autowonder.core.errors import (
@@ -87,8 +91,28 @@ def _form_endpoint(request: Request) -> bool:
     return False
 
 
+def _spring_not_found(request: Request) -> JSONResponse:
+    """没有控制器时的 Spring Boot 默认 404。时间戳带毫秒和偏移。"""
+    stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
+    return JSONResponse(
+        status_code=404,
+        content={
+            "timestamp": stamp,
+            "status": 404,
+            "error": "Not Found",
+            "path": request.url.path,
+        },
+    )
+
+
 def install_exception_handlers(app: FastAPI) -> None:
     """注册与 Java advice 相同的异常到 HTTP 映射。"""
+
+    @app.exception_handler(HTTPException)
+    async def handle_http(request: Request, exc: HTTPException) -> Response:
+        if exc.status_code == 404 and request.url.path.startswith("/api"):
+            return _spring_not_found(request)
+        return await http_exception_handler(request, exc)
 
     @app.exception_handler(IllegalArgumentError)
     async def handle_illegal(_request: Request, exc: IllegalArgumentError) -> JSONResponse:

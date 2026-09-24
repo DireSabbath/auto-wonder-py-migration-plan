@@ -10,6 +10,7 @@ from autowonder.agents.router import router as agent_router
 from autowonder.ai.router import router as ai_session_router
 from autowonder.aiusage.daemon_router import router as daemon_usage_router
 from autowonder.aiusage.router import router as ai_usage_router
+from autowonder.api.binding import install_binding_before_access
 from autowonder.api.errors import install_exception_handlers
 from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     import autowonder.model_imports  # noqa: F401
 
     configure_logging()
+    install_binding_before_access()
     app = FastAPI(title="auto-wonder", version=__version__)
     app.add_middleware(AuthMiddleware)
     install_exception_handlers(app)

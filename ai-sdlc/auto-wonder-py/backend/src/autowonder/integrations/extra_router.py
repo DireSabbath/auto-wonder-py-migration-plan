@@ -3,13 +3,17 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.routing import Match
+from starlette.types import Scope
 
 from autowonder.api.access import WorkspaceAccessLevel, require_access
 from autowonder.core.context import current_user_id, current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.db.session import get_session
+from autowonder.integrations.aone_codec import aone_enabled
 from autowonder.integrations.aone_outbox import dispatch_pending
 from autowonder.integrations.aone_schemas import AoneBindingRequest, AoneSyncNowRequest
 from autowonder.integrations.aone_service import (
@@ -32,9 +36,20 @@ from autowonder.integrations.workitem_import import (
     list_records,
 )
 
+
+class AoneRoute(APIRoute):
+    """Aone 关闭时控制器不存在，请求按未映射路径返回 404。"""
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        if scope["type"] == "http" and not aone_enabled():
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
 aone_router = APIRouter(
     prefix="/api/integrations/aone",
     tags=["aone"],
+    route_class=AoneRoute,
     dependencies=[Depends(require_access(WorkspaceAccessLevel.ADMIN, "管理Aone集成"))],
 )
 receipt_router = APIRouter(

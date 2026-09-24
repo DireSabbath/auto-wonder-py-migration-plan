@@ -31,6 +31,7 @@ _VOLATILE_KEYS = frozenset(
         "gmtModified",
         "createdAt",
         "updatedAt",
+        "timestamp",
     }
 )
 
