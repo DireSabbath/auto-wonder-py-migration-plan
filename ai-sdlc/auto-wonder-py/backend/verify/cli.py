@@ -1,11 +1,13 @@
-"""验证命令：smoke、authchain 与 dispatch-e2e 检查正在运行的 Python 服务。"""
+"""验证命令：smoke、authchain、logscan 与 dispatch-e2e 检查正在运行的 Python 服务。"""
 
 import argparse
 import json
+from pathlib import Path
 from urllib.request import urlopen
 
 from verify.authchain import authchain
 from verify.dispatch_e2e import dispatch_e2e
+from verify.logscan import logscan
 
 
 def smoke(base_url: str) -> dict[str, object]:
@@ -24,11 +26,24 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="verify")
     parser.add_argument("command")
     parser.add_argument("--base-url", default="http://127.0.0.1:7002")
+    parser.add_argument("--app-log", default="")
+    parser.add_argument("--file-log", default="")
+    parser.add_argument("--bodies", default="")
+    parser.add_argument("--app-start-line", type=int, default=0)
+    parser.add_argument("--file-start-line", type=int, default=0)
     args = parser.parse_args(argv)
     if args.command == "smoke":
         verdict = smoke(args.base_url)
     elif args.command == "authchain":
-        verdict = authchain(args.base_url)
+        verdict = authchain(args.base_url, _bodies(args.bodies))
+    elif args.command == "logscan":
+        verdict = logscan(
+            Path(args.app_log),
+            _bodies(args.bodies),
+            _optional_path(args.file_log),
+            args.app_start_line,
+            args.file_start_line,
+        )
     elif args.command == "dispatch-e2e":
         verdict = dispatch_e2e(args.base_url)
     else:
@@ -41,3 +56,17 @@ def main(argv: list[str] | None = None) -> int:
     if verdict["ok"] is True:
         return 0
     return 1
+
+
+def _bodies(path: str) -> Path | None:
+    if path == "":
+        return None
+    directory = Path(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _optional_path(path: str) -> Path | None:
+    if path == "":
+        return None
+    return Path(path)

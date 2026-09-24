@@ -42,9 +42,12 @@ class _Check:
         }
 
 
-def authchain(base_url: str) -> dict[str, object]:
-    """注册、登录、建空间、软删恢复，再走到澄清会话。"""
-    chain = _Chain(base_url.rstrip("/"))
+def authchain(base_url: str, bodies_dir: Path | None = None) -> dict[str, object]:
+    """注册、登录、建空间、软删恢复，再走到澄清会话。
+
+    ``bodies_dir`` 有值时，每次响应只记下 ``request_id``，供 logscan 归因。
+    """
+    chain = _Chain(base_url.rstrip("/"), bodies_dir)
     chain.walk()
     return chain.verdict()
 
@@ -72,8 +75,9 @@ def _positive_id(value: str) -> bool:
 
 
 class _Chain:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, bodies_dir: Path | None) -> None:
         self.base_url = base_url
+        self.bodies_dir = bodies_dir
         self.client = httpx.Client(timeout=60.0)
         self.checks: list[_Check] = []
         self.facts: dict[str, object] = {}
@@ -84,6 +88,7 @@ class _Chain:
         self.last_document: object = None
         self._token = ""
         self._workspace_token = ""
+        self._body_index = 0
 
     def walk(self) -> None:
         username = f"aw-e2e-{int(time.time())}"
@@ -573,6 +578,7 @@ class _Chain:
         )
         self.last_code = response.status_code
         self.last_document = _document(response)
+        self._save_request_id(response)
 
     def _check(self, name: str, want_code: int, want_success: str, note: str) -> None:
         got = ""
@@ -604,6 +610,19 @@ class _Chain:
         self.fail_count += 1
         self.stopped = detail
         self.checks.append(_Check("fatal", False, self.last_code, None, "", "", detail))
+
+    def _save_request_id(self, response: httpx.Response) -> None:
+        if self.bodies_dir is None:
+            return
+        request_id = _captured_request_id(self.last_document, response)
+        if request_id == "":
+            return
+        self._body_index += 1
+        path = self.bodies_dir / f"call-{self._body_index:04d}.json"
+        path.write_text(
+            json.dumps({"request_id": request_id}, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     def _sql(self, statement: str) -> str:
         parsed = urlsplit(get_settings().resolved_database_url)
@@ -644,3 +663,14 @@ def _document(response: httpx.Response) -> object:
         return response.json()
     except json.JSONDecodeError:
         return None
+
+
+def _captured_request_id(document: object, response: httpx.Response) -> str:
+    if isinstance(document, dict):
+        raw = document.get("request_id")
+        if isinstance(raw, str) and raw != "":
+            return raw
+    header = response.headers.get("x-acs-request-id")
+    if header is None or header == "":
+        return ""
+    return header
