@@ -1,13 +1,24 @@
-"""平台当前选择的 IM 渠道。未选择时按钉钉处理。"""
+"""平台当前选择的 IM 渠道，以及发送端口。未选择时按钉钉处理。"""
+
+import re
+from dataclasses import dataclass
+from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.core.errors import BizError, ErrorCode
-from autowonder.im.models import PlatformImSelection
+from autowonder.debuglogs.sanitizer import java_is_blank
+from autowonder.evolution.jsontext import java_trim
+from autowonder.im.models import PlatformImChannelConfig, PlatformImSelection
+
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 _DINGTALK = "DINGTALK"
 _FEISHU = "FEISHU"
+DINGTALK = _DINGTALK
+FEISHU = _FEISHU
+PROVIDERS = (DINGTALK, FEISHU)
 
 
 def normalize_provider(provider: str | None) -> str:
@@ -31,10 +42,12 @@ def resolve_selected_provider(stored: str | None) -> str:
 
 async def selected_provider(session: AsyncSession) -> str:
     """读取平台当前 IM 渠道。"""
-    stored = await session.scalar(
-        select(PlatformImSelection.provider).where(PlatformImSelection.id == 1)
+    row = await session.scalar(
+        select(PlatformImSelection).where(PlatformImSelection.id == 1).limit(1)
     )
-    return resolve_selected_provider(stored)
+    if row is None:
+        return _DINGTALK
+    return resolve_selected_provider(row.provider)
 
 
 def require_selected_provider(selected: str, provider: str) -> None:
@@ -46,3 +59,113 @@ def require_selected_provider(selected: str, provider: str) -> None:
 async def require_selected(session: AsyncSession, provider: str) -> None:
     """核对平台当前 IM 渠道。"""
     require_selected_provider(await selected_provider(session), provider)
+
+
+class ImDeliveryError(Exception):
+    """供应商拒绝发送。消息只保留安全标记，调用方再改写成固定业务错误。"""
+
+    def __init__(
+        self,
+        provider: str | None,
+        retryable: bool,
+        provider_code: str | None,
+        provider_request_id: str | None,
+    ) -> None:
+        self.provider = provider
+        self.retryable = retryable
+        self.provider_code = _safe(provider_code)
+        self.provider_request_id = _safe(provider_request_id)
+        super().__init__(
+            _delivery_message(provider, retryable, provider_code, provider_request_id)
+        )
+
+
+def _delivery_message(
+    provider: str | None,
+    retryable: bool,
+    provider_code: str | None,
+    provider_request_id: str | None,
+) -> str:
+    retryable_text = "false"
+    if retryable:
+        retryable_text = "true"
+    return (
+        "IM delivery failed provider="
+        + _safe_or_unknown(provider)
+        + " retryable="
+        + retryable_text
+        + " providerCode="
+        + _safe_or_unknown(provider_code)
+        + " providerRequestId="
+        + _safe_or_unknown(provider_request_id)
+    )
+
+
+def _safe(value: str | None) -> str | None:
+    if value is None or _SAFE_TOKEN.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _safe_or_unknown(value: str | None) -> str:
+    safe = _safe(value)
+    if safe is None:
+        return "unknown"
+    return safe
+
+
+class ImChannelGateway(Protocol):
+    """读取当前通道并解密密钥。"""
+
+    async def find_enabled(self, provider: str) -> PlatformImChannelConfig | None:
+        """当前选中且启用的通道。"""
+
+    def decrypt_secret(self, row: PlatformImChannelConfig | None) -> str | None:
+        """还原通道密钥。没有密文时为空。"""
+
+
+@dataclass(frozen=True)
+class ImSendCommand:
+    """一条协作通知。"""
+
+    provider: str
+    external_user_id: str
+    title: str
+    markdown: str
+
+
+class ImProvider(Protocol):
+    """一个 IM 供应商。"""
+
+    def provider(self) -> str:
+        """规范名称。"""
+
+    async def send(self, command: ImSendCommand) -> None:
+        """发送一条消息。"""
+
+
+class ImProviderRegistry:
+    """按规范名称查找供应商。重复注册直接失败。"""
+
+    def __init__(self, providers: list[ImProvider]) -> None:
+        indexed: dict[str, ImProvider] = {}
+        for item in providers:
+            name = _registry_name(item.provider())
+            if name in indexed:
+                raise RuntimeError(f"Duplicate IM provider: {name}")
+            indexed[name] = item
+        self._providers = indexed
+
+    def require(self, provider: str) -> ImProvider:
+        """没有对应实现时拒绝。"""
+        name = _registry_name(provider)
+        selected = self._providers.get(name)
+        if selected is None:
+            raise ValueError(f"Unsupported IM provider: {name}")
+        return selected
+
+
+def _registry_name(provider: str | None) -> str:
+    if provider is None or java_is_blank(provider):
+        raise ValueError("IM provider is required")
+    return java_trim(provider).upper()
