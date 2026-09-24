@@ -97,8 +97,12 @@ def _trigger(job: ScheduledJob) -> IntervalTrigger | CronTrigger:
 @asynccontextmanager
 async def scheduler_lifespan(_app: object) -> AsyncIterator[None]:
     """进程退出时停掉调度器。单个任务抛错由 APScheduler 记录，不中断其余任务。"""
+    from autowonder.ai.worker import start_workers, stop_workers
+
     scheduler = start_scheduler()
+    workers = start_workers()
     try:
         yield
     finally:
+        await stop_workers(workers)
         scheduler.shutdown(wait=False)

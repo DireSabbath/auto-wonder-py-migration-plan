@@ -3,14 +3,14 @@
 import json
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.ai.models import AiSession
 from autowonder.clarifications.models import Clarification
 from autowonder.memories.models import Memory
-from autowonder.repos.models import RepoConclusion
-from autowonder.sdlcs.models import SdlcStep
+from autowonder.repos.models import Repo, RepoConclusion
+from autowonder.sdlcs.models import Sdlc, SdlcStep
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +110,10 @@ def _agent(result_json: str | None) -> str | None:
             value = obj.get(key)
             if value is not None and not isinstance(value, str):
                 return key + " must be a string"
-        if "missingFields" in obj and obj.get("missingFields") is not None and not isinstance(
-            obj.get("missingFields"), list
+        if (
+            "missingFields" in obj
+            and obj.get("missingFields") is not None
+            and not isinstance(obj.get("missingFields"), list)
         ):
             return "missingFields must be an array"
         questions = obj.get("clarifyingQuestions")
@@ -149,6 +151,10 @@ async def _persist_repo(
 ) -> None:
     if ai_session.biz_ref_id is None:
         return
+    repo = await session.get(Repo, ai_session.biz_ref_id)
+    if repo is None or repo.tenant_id != ai_session.tenant_id:
+        logger.warning("repo not found for scan confirm repoId=%s", ai_session.biz_ref_id)
+        return
     existing = await session.scalar(
         select(RepoConclusion)
         .where(
@@ -173,10 +179,21 @@ async def _persist_repo(
         )
     else:
         existing.purpose = _text(payload.get("purpose"))
+        existing.key_business = payload.get("keyBusiness")
+        existing.upstreams = payload.get("upstreams")
+        existing.downstreams = payload.get("downstreams")
         existing.summary_md = _text(payload.get("summaryMd"))
-        existing.ai_session_id = ai_session.id
         existing.version = existing.version + 1
     await session.flush()
+    await session.execute(
+        update(Repo)
+        .where(
+            Repo.id == repo.id,
+            Repo.tenant_id == ai_session.tenant_id,
+            Repo.version == repo.version,
+        )
+        .values(scan_status="CONCLUDED", version=Repo.version + 1)
+    )
 
 
 async def _persist_memory(
@@ -241,8 +258,19 @@ async def _persist_sdlc(
     ai_session: AiSession,
     payload: dict[str, object],
 ) -> None:
-    if ai_session.biz_ref_id is None:
-        return
+    name = _text(payload.get("name"))
+    if name is None or name.strip() == "":
+        name = "AI Generated SDLC"
+    sdlc = Sdlc(
+        tenant_id=ai_session.tenant_id,
+        name=name,
+        description=_text(payload.get("description")),
+        status="DRAFT",
+        is_default=0,
+        version=0,
+    )
+    session.add(sdlc)
+    await session.flush()
     steps = payload.get("steps")
     if not isinstance(steps, list):
         return
@@ -250,16 +278,25 @@ async def _persist_sdlc(
         if not isinstance(step, dict):
             continue
         order = step.get("order")
+        step_order = 0
+        if isinstance(order, int) and not isinstance(order, bool):
+            step_order = order
+        required_flag = 1
+        if step.get("required") is False:
+            required_flag = 0
         session.add(
             SdlcStep(
                 tenant_id=ai_session.tenant_id,
-                sdlc_id=ai_session.biz_ref_id,
-                step_order=order if isinstance(order, int) and not isinstance(order, bool) else 0,
+                sdlc_id=sdlc.id,
+                step_order=step_order,
                 name=_text(step.get("name")) or "",
                 kind=_text(step.get("kind")),
                 instruction_md=_text(step.get("instructionMd")),
                 checklist_json=step.get("checklist"),
                 gate_policy_json=step.get("gatePolicy"),
+                required=required_flag,
+                timeout_seconds=_int_or_none(step.get("timeoutSeconds")),
+                retry_budget=_int_or_none(step.get("retryBudget")),
             )
         )
     await session.flush()
@@ -283,6 +320,12 @@ def _extract_object(result_json: str | None) -> str | None:
     if start >= 0 and end > start:
         return text[start : end + 1]
     return result_json
+
+
+def _int_or_none(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _text(value: object) -> str | None:

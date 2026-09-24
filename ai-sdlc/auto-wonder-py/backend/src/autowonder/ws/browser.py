@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from autowonder.ai.models import AiSession
 from autowonder.api.access import WorkspaceAccessLevel
 from autowonder.conversations.models import AgentConversation
 from autowonder.db.session import SessionLocal
@@ -30,6 +31,7 @@ MEMBER_STATUS_ACTIVE = 0
 DISPATCH_PREFIX = "dispatch:"
 CONVERSATION_PREFIX = "conversation:"
 SCHEDULED_RUN_PREFIX = "scheduled-run:"
+AI_SESSION_PREFIX = "ai:session:"
 
 
 @dataclass
@@ -217,6 +219,8 @@ async def _authorize(workspace_id: int, user_id: int, channel: str) -> bool:
         return await _authorize_conversation(workspace_id, channel)
     if channel.startswith(SCHEDULED_RUN_PREFIX):
         return await _authorize_scheduled_run(workspace_id, user_id, channel)
+    if channel.startswith(AI_SESSION_PREFIX):
+        return await _authorize_ai_session(workspace_id, channel)
     return False
 
 
@@ -281,6 +285,17 @@ async def _authorize_scheduled_run(workspace_id: int, user_id: int, channel: str
         if run is None or member is None:
             return False
         return _allows_read(member.access_level)
+
+
+async def _authorize_ai_session(workspace_id: int, channel: str) -> bool:
+    session_id = _suffix_id(channel, AI_SESSION_PREFIX)
+    if session_id is None:
+        return False
+    async with SessionLocal() as session:
+        row = await session.get(AiSession, session_id)
+    if row is None or row.is_deleted == 1 or row.tenant_id != workspace_id:
+        return False
+    return True
 
 
 async def _active_member(
