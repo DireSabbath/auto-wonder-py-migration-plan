@@ -17,7 +17,8 @@ _JAVA_PORT = 33060
 _PYTHON_PORT = 33061
 _JAVA_REDIS = 63790
 _PYTHON_REDIS = 63791
-_JAVA_REDIS_DB = 15
+# Java RedisManager 的连接池不读 REDIS_DATABASE，固定落在 0 号库。
+_JAVA_REDIS_DB = 0
 _PAUSE_ERROR = "PAUSE_CONFIRMATION_MISSING: 暂停确认超时，平台未收到有效暂停检查点"
 _STUCK_ERROR = "session stuck (node may have crashed)"
 _PENDING_TIMEOUT = "PENDING_TIMEOUT: object missing after 24h"
@@ -153,6 +154,7 @@ def _seed(token: str, now: datetime) -> str:
     # 写成 UTC 现在之前，两边都会把它当成已经到期，并且不早于 gmt_create。
     due = _stamp(now, timedelta(hours=-8, minutes=-2))
     return f"""
+UPDATE scheduled_task SET status='PAUSED' WHERE name LIKE 'jd%-once' AND status='ACTIVE';
 INSERT INTO user (username, password_hash, nickname, status, deactivated_at, cooling_off_expires_at, is_deleted)
 VALUES ('{token}-expired', 'hash-expired', 'keep', 0, '{past}', '{past}', 0);
 INSERT INTO user (username, password_hash, nickname, status, deactivated_at, cooling_off_expires_at, is_deleted)
@@ -228,7 +230,7 @@ VALUES ('{token}-deleted', NULL, 1, 0, 1);
 """
 
 
-def _mysql(port: int, sql: str) -> list[list[str]]:
+def _mysql(port: int, sql: str) -> list[list[str | None]]:
     defaults = _defaults_file()
     completed = subprocess.run(
         [
@@ -247,10 +249,10 @@ def _mysql(port: int, sql: str) -> list[list[str]]:
     )
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr)
-    rows: list[list[str]] = []
+    rows: list[list[str | None]] = []
     for line in completed.stdout.splitlines():
         if line != "":
-            rows.append(line.split("\t"))
+            rows.append([_cell(item) for item in line.split("\t")])
     return rows
 
 
@@ -262,14 +264,13 @@ def _defaults_file() -> Path:
 
 
 def _cell(value: str) -> str | None:
-    if value == r"\N":
+    if value == r"\N" or value == "NULL":
         return None
     return value
 
 
 def _one(port: int, sql: str) -> list[str | None]:
-    rows = _mysql(port, sql)
-    return [_cell(item) for item in rows[0]]
+    return _mysql(port, sql)[0]
 
 
 def _facts(
@@ -489,7 +490,7 @@ async def _run_python() -> list[str]:
         try:
             await runner()
         except Exception as error:
-            failures.append(name + " " + type(error).__name__)
+            failures.append(name + " " + type(error).__name__ + " " + str(error))
     _PYTHON_LOG.append("\n".join(handler.lines))
     return failures
 
@@ -513,13 +514,14 @@ def _run_java() -> str:
     log_path = Path("/tmp/jobdual-java.log")
     command = (
         "set -a; source /tmp/java-aone.env; set +a; "
-        "export SERVER_PORT=7011; export REDIS_DATABASE=15; "
+        "export SERVER_PORT=7011; "
         "cd /tmp/alibabacloud-landing-zone/ai-sdlc/auto-wonder; "
         "exec java -Dloader.main=JobDual -Dloader.path=/tmp/jobdual "
         "-Dserver.port=7011 "
         "-Dautowonder.ai.worker-pool-size=1 "
         "-Dautowonder.workitem.scheduled-start.scanner-enabled=false "
-        "-jar target/auto-wonder.jar " + specs + " > /tmp/jobdual-java.log 2>&1"
+        "-cp target/auto-wonder.jar org.springframework.boot.loader.PropertiesLauncher "
+        + specs + " > /tmp/jobdual-java.log 2>&1"
     )
     try:
         subprocess.run(
@@ -659,11 +661,11 @@ def _expected(token: str) -> dict[str, object]:
         ],
         "sessions": [
             [token + "-old", "FAILED", _STUCK_ERROR],
-            [token + "-recent", "RUNNING", r"\N"],
+            [token + "-recent", "RUNNING", None],
         ],
         "debugLogs": [
             [token + "/old", "FAILED", _PENDING_TIMEOUT],
-            [token + "/recent", "PENDING", r"\N"],
+            [token + "/recent", "PENDING", None],
         ],
         "outbox": [
             [token + "-dispatch", "FAILED", _BIND_MISSING],
@@ -677,7 +679,7 @@ def _expected(token: str) -> dict[str, object]:
         "starting": ["FAILED", _OWNER],
         "upgrade": ["PENDING", "later"],
         "dispatches": [
-            [token + "-clean", "SUCCEEDED", r"\N"],
+            [token + "-clean", "SUCCEEDED", None],
             [token + "-pause", "PAUSE_FAILED", _PAUSE_ERROR],
             [token + "-run", "TIMEOUT", "TIMEOUT"],
         ],
