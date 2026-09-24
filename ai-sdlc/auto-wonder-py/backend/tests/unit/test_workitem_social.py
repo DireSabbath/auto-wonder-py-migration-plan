@@ -2,8 +2,6 @@
 
 from datetime import datetime
 
-from tests.unit.test_workitems import MemorySession
-
 from autowonder.agents.models import Agent, AgentVersion
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.dispatch.enqueue import enqueue_comment_interaction, enqueue_workitem
@@ -29,6 +27,7 @@ from autowonder.workitems.schemas import ParticipantView, TimelineItemView
 from autowonder.workitems.timeline import timeline, unified_timeline
 from autowonder.workitems.watchers import follow, list_watchers, unfollow
 from autowonder.workspaces.models import OrgMember
+from tests.unit.test_workitems import MemorySession
 
 _NOW = datetime(2026, 9, 24, 8, 0, 0)
 _AONE_MENTION = (
