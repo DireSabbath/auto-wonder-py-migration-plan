@@ -12,6 +12,7 @@ from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.db.session import get_session
 from autowonder.evolution.admin import overview
+from autowonder.evolution.agent_release import release_agent
 from autowonder.evolution.canary import postprocess_canary
 from autowonder.evolution.commands import (
     EvidenceCommand,
@@ -25,6 +26,7 @@ from autowonder.evolution.evidence import record_event, record_evidence
 from autowonder.evolution.gates import record_gate
 from autowonder.evolution.jsontext import bool_field, double_field, long_field, text_field
 from autowonder.evolution.lifecycle import approve, record_replay, reject, release, validate
+from autowonder.evolution.manifest import manifest
 from autowonder.evolution.orchestrator import orchestrate
 from autowonder.evolution.present import (
     evidence_data,
@@ -157,6 +159,30 @@ async def release_proposal(
     await release(session, id, _workspace_id(), _user_id())
     await session.commit()
     return ok(None)
+
+
+@router.post(
+    "/proposals/{id}/agent-release",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "发布演进智能体"))],
+)
+async def release_agent_proposal(
+    id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """门禁通过后审批并发布提案。必须显式允许发布。"""
+    body = await _body(request)
+    result = await release_agent(
+        session,
+        id,
+        bool_field(body, "allowRelease"),
+        _gate_types(body),
+        bool_field(body, "allowCanaryInconclusive"),
+        _workspace_id(),
+        _user_id(),
+    )
+    await session.commit()
+    return ok(result)
 
 
 @router.post(
@@ -455,6 +481,34 @@ async def admin_overview(
             "evidence": [evidence_data(row) for row in evidence],
         }
     )
+
+
+@router.get(
+    "/admin/asset-manifest",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_ONLY, "查看演进管理信息"))],
+)
+async def admin_asset_manifest(
+    asset_type: Annotated[str | None, Query(alias="assetType")] = None,
+    context_key: Annotated[str | None, Query(alias="contextKey")] = None,
+    limit: Annotated[int | None, Query()] = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """返回记忆、技能和仓库关系的轻量卡片。"""
+    return ok(await manifest(session, _workspace_id(), asset_type, context_key, limit))
+
+
+def _gate_types(body: dict[str, object]) -> list[str] | None:
+    raw = body.get("requiredGateTypes")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise BizError(ErrorCode.PARAM_INVALID)
+    names: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise BizError(ErrorCode.PARAM_INVALID)
+        names.append(item)
+    return names
 
 
 def _run_command(body: dict[str, object]) -> RunCommand:

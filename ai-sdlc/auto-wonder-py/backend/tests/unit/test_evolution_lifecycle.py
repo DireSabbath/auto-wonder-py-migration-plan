@@ -45,7 +45,7 @@ _MEMORY_PATCH = {
 
 
 def test_evolution_routes_match_java_and_require_login() -> None:
-    """已接入的演进路径要求登录。智能体发布和资产清单仍未注册。"""
+    """已接入的演进路径要求登录。"""
     client = TestClient(create_app())
     paths = client.app.openapi()["paths"]
     expected = [
@@ -54,6 +54,7 @@ def test_evolution_routes_match_java_and_require_login() -> None:
         "/api/evolution/proposals/{id}/replay",
         "/api/evolution/proposals/{id}/approve",
         "/api/evolution/proposals/{id}/release",
+        "/api/evolution/proposals/{id}/agent-release",
         "/api/evolution/proposals/{id}/reject",
         "/api/evolution/proposals/{id}/trial/start",
         "/api/evolution/proposals/{id}/trial/evidence",
@@ -68,11 +69,10 @@ def test_evolution_routes_match_java_and_require_login() -> None:
         "/api/evolution/canary/postprocess",
         "/api/evolution/rollback/{proposalId}",
         "/api/evolution/admin/overview",
+        "/api/evolution/admin/asset-manifest",
     ]
     for path in expected:
         assert path in paths
-    assert "/api/evolution/proposals/{id}/agent-release" not in paths
-    assert "/api/evolution/admin/asset-manifest" not in paths
     response = client.post("/api/evolution/proposals", json={})
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
