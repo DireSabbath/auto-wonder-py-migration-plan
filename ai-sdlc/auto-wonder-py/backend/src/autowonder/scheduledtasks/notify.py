@@ -20,13 +20,27 @@ async def scheduled_task_id(session: AsyncSession, workspace_id: int, run_id: in
 
 async def publish_artifact(session: AsyncSession, workspace_id: int, run_id: int) -> None:
     """向该运行的订阅频道发布 artifact 帧。运行不存在时不发布。"""
+    await _publish_run_frame(session, workspace_id, run_id, "artifact")
+
+
+async def publish_derived_workitem(session: AsyncSession, workspace_id: int, run_id: int) -> None:
+    """定时任务派生工单后发布 derived-workitem 帧。运行不存在时不发布。"""
+    await _publish_run_frame(session, workspace_id, run_id, "derived-workitem")
+
+
+async def _publish_run_frame(
+    session: AsyncSession,
+    workspace_id: int,
+    run_id: int,
+    frame_type: str,
+) -> None:
     run = await _run(session, workspace_id, run_id)
     if run is None:
         return
     channel = "scheduled-run:" + str(run.id)
     frame = {
         "channel": channel,
-        "type": "artifact",
+        "type": frame_type,
         "payload": {"runId": run.id},
         "timestamp": time.time_ns() // 1_000_000,
     }

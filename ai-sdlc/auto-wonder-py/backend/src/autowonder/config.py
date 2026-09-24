@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         default=True,
         validation_alias="AUTOWONDER_SCHEDULED_TASK_CLUSTER_READY",
     )
+    workitem_stuck_threshold_ms: int = Field(
+        default=3_600_000,
+        validation_alias="AUTOWONDER_WORKITEM_STUCK_THRESHOLD_MS",
+    )
 
     @property
     def resolved_database_url(self) -> str:

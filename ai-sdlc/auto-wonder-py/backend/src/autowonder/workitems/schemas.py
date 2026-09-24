@@ -1,0 +1,142 @@
+"""工单请求和响应。JSON 字段使用 camelCase。"""
+
+from datetime import datetime
+
+from autowonder.core.clock import SHANGHAI
+from autowonder.core.errors import BizError, ErrorCode
+from autowonder.core.schema import ApiModel
+
+
+class WorkitemOriginView(ApiModel):
+    """服务端回链。请求体不能写入来源。"""
+
+    type: str
+    id: int
+    scheduled_task_id: int | None = None
+    scheduled_task_name: str | None = None
+
+
+class WorkitemView(ApiModel):
+    """工单卡片。时间为上海本地钟，序列化成毫秒。"""
+
+    id: int
+    work_type: str
+    title: str
+    execution_status: str | None = None
+    content_md: str | None = None
+    template_id: int | None = None
+    status_node_id: int | None = None
+    status_name: str | None = None
+    sdlc_id: int | None = None
+    sdlc_name: str | None = None
+    assignee_type: str | None = None
+    assignee_ref: int | None = None
+    assignee_name: str | None = None
+    assignee_display_name: str | None = None
+    creator_id: int | None = None
+    creator_name: str | None = None
+    creator_display_name: str | None = None
+    priority: int
+    version: int
+    gmt_create: datetime
+    gmt_modified: datetime
+    health: str | None = None
+    health_reason: str | None = None
+    pending_decision: bool = False
+    source_type: str | None = None
+    source_provider: str | None = None
+    source_url: str | None = None
+    deletable: bool | None = None
+    deletable_reason: str | None = None
+    origin: WorkitemOriginView | None = None
+    external_collaboration: None = None
+    source_creator: None = None
+    scheduled_start_at: datetime | None = None
+    scheduled_start_triggered_at: datetime | None = None
+    scheduled_phase: str | None = None
+    tags: list[str]
+    watched: bool | None = None
+
+
+class CreateWorkitemRequest(ApiModel):
+    """创建工单。来源只能由服务端调用写入。"""
+
+    work_type: str | None = None
+    title: str | None = None
+    content_md: str | None = None
+    priority: int | None = None
+    assignee_type: str | None = None
+    assignee_ref: int | None = None
+    sdlc_id: int | None = None
+    squad_id: int | None = None
+    scheduled_start_at: datetime | int | float | str | None = None
+
+
+class AssignRequest(ApiModel):
+    """指派。计划时间为空表示立即交付。"""
+
+    assignee_type: str | None = None
+    assignee_ref: int | None = None
+    sdlc_id: int | None = None
+    squad_id: int | None = None
+    scheduled_start_at: datetime | int | float | str | None = None
+
+
+class ScheduledStartRequest(ApiModel):
+    """改期、取消或立即执行。``executeNow`` 优先于新的计划时间。"""
+
+    scheduled_start_at: datetime | int | float | str | None = None
+    execute_now: bool | None = None
+
+
+class TransitionRequest(ApiModel):
+    """流转。目标节点为空时控制器直接拒绝。"""
+
+    to_node_id: int | None = None
+    from_node_id: int | None = None
+    expected_version: int | None = None
+
+
+class UpdateTagsRequest(ApiModel):
+    """空列表清空标签。"""
+
+    tags: list[str | None] | None = None
+
+
+class UpdateContentRequest(ApiModel):
+    """省略的标题或正文保持原值。"""
+
+    title: str | None = None
+    content_md: str | None = None
+
+
+def parse_java_date(value: object) -> datetime | None:
+    """毫秒时间戳、带时区的 ISO 和上海本地 ISO 都收成 naive 本地时间。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _as_local(value)
+    if isinstance(value, bool):
+        raise BizError(ErrorCode.PARAM_INVALID)
+    if isinstance(value, int) or isinstance(value, float):
+        return datetime.fromtimestamp(value / 1000, SHANGHAI).replace(tzinfo=None)
+    if isinstance(value, str):
+        return _parse_iso(value)
+    raise BizError(ErrorCode.PARAM_INVALID)
+
+
+def _as_local(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(SHANGHAI).replace(tzinfo=None)
+
+
+def _parse_iso(value: str) -> datetime:
+    text = value
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise BizError(ErrorCode.PARAM_INVALID) from error
+    return _as_local(parsed)
