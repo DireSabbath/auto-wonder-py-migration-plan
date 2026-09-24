@@ -45,7 +45,7 @@ from autowonder.insights.service import request_refresh
 from autowonder.integrations.aone_codec import aone_enabled
 from autowonder.integrations.aone_outbox import dispatch_pending
 from autowonder.integrations.aone_service import crypto
-from autowonder.integrations.aone_sync import sync_workitems
+from autowonder.integrations.aone_sync import reconcile_linked_workitems, sync_binding_increment
 from autowonder.integrations.dingtalk_bindings import start_stream_if_eligible
 from autowonder.integrations.models import (
     DingtalkRobotBinding,
@@ -1043,27 +1043,64 @@ async def _poll_binding(binding_id: int, client: object) -> None:
         binding = await session.get(ExternalProjectBinding, binding_id)
         if binding is None:
             return
+        tenant_id = binding.tenant_id
+        project_id = binding.external_project_id
         try:
-            await sync_workitems(session, client, crypto(), binding, _actor_id(binding))
+            await sync_binding_increment(session, client, crypto(), binding, _actor_id(binding))
             await session.commit()
         except Exception as error:
-            await session.rollback()
-            await session.execute(
-                update(ExternalProjectBinding)
-                .where(
-                    ExternalProjectBinding.id == binding.id,
-                    ExternalProjectBinding.tenant_id == binding.tenant_id,
-                )
-                .values(last_error=str(error)[:4000])
+            await _mark_poll_failure(session, binding_id, tenant_id, project_id, error)
+            return
+    async with SessionLocal() as session:
+        binding = await session.get(ExternalProjectBinding, binding_id)
+        if binding is None:
+            return
+        tenant_id = binding.tenant_id
+        project_id = binding.external_project_id
+        try:
+            reconciled = await reconcile_linked_workitems(
+                session,
+                client,
+                crypto(),
+                binding,
+                _actor_id(binding),
+                100,
             )
             await session.commit()
-            logger.warning(
-                "Aone inbound poll failed bindingId=%s tenantId=%s projectId=%s",
-                binding.id,
-                binding.tenant_id,
-                binding.external_project_id,
-                exc_info=True,
-            )
+            if reconciled > 0:
+                logger.info(
+                    "Aone linked workitem reconciliation success bindingId=%s reconciledCount=%s",
+                    binding_id,
+                    reconciled,
+                )
+        except Exception as error:
+            await _mark_poll_failure(session, binding_id, tenant_id, project_id, error)
+
+
+async def _mark_poll_failure(
+    session: AsyncSession,
+    binding_id: int,
+    tenant_id: int,
+    project_id: str,
+    error: Exception,
+) -> None:
+    await session.rollback()
+    await session.execute(
+        update(ExternalProjectBinding)
+        .where(
+            ExternalProjectBinding.id == binding_id,
+            ExternalProjectBinding.tenant_id == tenant_id,
+        )
+        .values(last_error=str(error)[:4000])
+    )
+    await session.commit()
+    logger.warning(
+        "Aone inbound poll failed bindingId=%s tenantId=%s projectId=%s",
+        binding_id,
+        tenant_id,
+        project_id,
+        exc_info=True,
+    )
 
 
 def _actor_id(binding: ExternalProjectBinding) -> int:

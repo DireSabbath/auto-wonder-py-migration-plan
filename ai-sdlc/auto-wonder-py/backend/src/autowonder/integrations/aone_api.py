@@ -109,13 +109,16 @@ class ExternalWorkitemDetail:
 
 @dataclass
 class ExternalComment:
-    """外部评论。"""
+    """外部评论。作者工号优先；只有内部 userId 时再解析一次。"""
 
     external_id: str | None = None
     external_workitem_id: str | None = None
     author_staff_id: str | None = None
+    author_internal_user_id: str | None = None
+    author_name: str | None = None
     content_md: str | None = None
     source_status: str | None = None
+    created_at: datetime | None = None
     updated_at: datetime | None = None
 
 
@@ -293,15 +296,19 @@ def search_project(
     client: AoneClient,
     config: AoneConfig,
     project_id: str,
+    created_from: datetime | None = None,
 ) -> PageResult[ExternalWorkitemDetail]:
-    """按创建时间窗口扫描。超过偏移上限时对半切分窗口。"""
+    """按创建时间窗口扫描。``created_from`` 为空时从默认纪元扫到现在。"""
+    start_ms = _DEFAULT_EPOCH_MILLIS
+    if created_from is not None:
+        start_ms = _millis(created_from)
     collected: dict[str, ExternalWorkitemDetail] = {}
     state = {"first_done": False}
     _scan_window(
         client,
         config,
         project_id,
-        _DEFAULT_EPOCH_MILLIS,
+        start_ms,
         int(time.time() * 1000),
         collected,
         state,
@@ -344,6 +351,22 @@ def get_workitem(
         {"id": workitem_id},
     )
     return to_detail(result)
+
+
+def list_comments(
+    client: AoneClient,
+    config: AoneConfig,
+    external_workitem_ids: list[str],
+) -> list[ExternalComment]:
+    """按工单 id 拉评论，并把内部 userId 解析成工号。"""
+    result = client.get(
+        config,
+        "/issue/openapi/CommentTopService/get",
+        {"targetType": "Issue", "ids": _numeric_ids(external_workitem_ids)},
+    )
+    comments = [_to_comment(item) for item in _array_from(result) if isinstance(item, dict)]
+    _resolve_comment_authors(client, config, comments)
+    return comments
 
 
 def list_enabled_issue_types(
@@ -725,6 +748,204 @@ def _date(value: str | None) -> datetime | None:
 
 def _from_millis(millis: int) -> datetime:
     return datetime.fromtimestamp(millis / 1000, _SHANGHAI)
+
+
+def _millis(value: datetime) -> int:
+    """上海墙上时间或带时区的时间，换成纪元毫秒。"""
+    aware = value
+    if value.tzinfo is None:
+        aware = value.replace(tzinfo=_SHANGHAI)
+    return int(aware.timestamp() * 1000)
+
+
+def _numeric_ids(ids: list[str]) -> list[object]:
+    """数字 id 按整数放进 JSON 数组，其余保持原文。"""
+    result: list[object] = []
+    for item in ids:
+        if item.strip() == "":
+            continue
+        try:
+            result.append(int(item))
+        except ValueError:
+            result.append(item)
+    return result
+
+
+def _to_comment(obj: dict[str, object]) -> ExternalComment:
+    author = _object(obj, "author", "user", "creator")
+    status = "ACTIVE"
+    if obj.get("isDeleted") is True:
+        status = "DELETED"
+    return ExternalComment(
+        external_id=_first(_scalar(obj, "id"), _scalar(obj, "commentId")),
+        external_workitem_id=_first(_scalar(obj, "targetId"), _scalar(obj, "issueId")),
+        author_staff_id=_first(
+            _explicit_staff(obj),
+            _explicit_staff(author),
+            _scalar_subject(obj, "creator"),
+            _scalar_subject(author, "creator"),
+        ),
+        author_internal_user_id=_first(_internal_user(obj), _internal_user(author)),
+        author_name=_first(
+            _explicit_name(obj),
+            _explicit_name(author),
+            _scalar_display(obj, "creator"),
+            _scalar_display(obj, "user"),
+            _scalar_display(obj, "author"),
+        ),
+        content_md=_first(_scalar(obj, "content"), _scalar(obj, "body")),
+        source_status=status,
+        created_at=_date(_first(_scalar(obj, "createdAt"), _scalar(obj, "gmtCreate"))),
+        updated_at=_date(_first(_scalar(obj, "updatedAt"), _scalar(obj, "gmtModified"))),
+    )
+
+
+def _resolve_comment_authors(
+    client: AoneClient,
+    config: AoneConfig,
+    comments: list[ExternalComment],
+) -> None:
+    """单个作者查不到工号时跳过该条，不打断这一批评论。"""
+    resolved: dict[str, tuple[str, str | None]] = {}
+    attempted: set[str] = set()
+    for comment in comments:
+        if comment.author_staff_id is not None and comment.author_staff_id.strip() != "":
+            continue
+        internal_user_id = comment.author_internal_user_id
+        if internal_user_id is None or internal_user_id.strip() == "":
+            continue
+        principal = resolved.get(internal_user_id)
+        if internal_user_id not in attempted:
+            attempted.add(internal_user_id)
+            principal = _resolve_comment_author(client, config, internal_user_id)
+            if principal is not None:
+                resolved[internal_user_id] = principal
+        if principal is None:
+            continue
+        comment.author_staff_id = principal[0]
+        if comment.author_name is None or comment.author_name.strip() == "":
+            comment.author_name = principal[1]
+
+
+def _resolve_comment_author(
+    client: AoneClient,
+    config: AoneConfig,
+    internal_user_id: str,
+) -> tuple[str, str | None] | None:
+    try:
+        response = client.get(
+            config,
+            "/ak/project/openapi/UserApiFacade/getById",
+            {"id": internal_user_id},
+        )
+    except AoneOpenApiError as error:
+        logger.warning(
+            "Aone comment author lookup failed: userId=%s error=%s",
+            internal_user_id,
+            error,
+        )
+        return None
+    user = _object(response, "result", "data")
+    if user is None:
+        user = response
+    staff_id = _first(
+        _scalar(user, "staffId"),
+        _scalar(user, "userStaffId"),
+        _scalar(user, "employeeId"),
+    )
+    if staff_id is None or staff_id.strip() == "":
+        logger.warning(
+            "Aone comment author lookup returned no staff ID: userId=%s",
+            internal_user_id,
+        )
+        return None
+    display_name = _first(
+        _scalar(user, "userName"),
+        _scalar(user, "nickName"),
+        _scalar(user, "nickname"),
+        _scalar(user, "realName"),
+        _scalar(user, "displayName"),
+        _scalar(user, "name"),
+    )
+    return staff_id, display_name
+
+
+def _scalar(obj: dict[str, object] | None, key: str) -> str | None:
+    if obj is None:
+        return None
+    value = obj.get(key)
+    if value is None or isinstance(value, dict | list):
+        return None
+    return str(value)
+
+
+def _object(source: dict[str, object] | None, *keys: str) -> dict[str, object] | None:
+    if source is None:
+        return None
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _explicit_staff(person: dict[str, object] | None) -> str | None:
+    return _first(
+        _scalar(person, "userStaffId"),
+        _scalar(person, "staffId"),
+        _scalar(person, "authorStaffId"),
+        _scalar(person, "creatorStaffId"),
+        _scalar(person, "operatorStaffId"),
+    )
+
+
+def _internal_user(person: dict[str, object] | None) -> str | None:
+    return _first(
+        _scalar(person, "userId"),
+        _scalar(person, "authorId"),
+        _scalar(person, "creatorId"),
+    )
+
+
+def _explicit_name(person: dict[str, object] | None) -> str | None:
+    return _first(
+        _scalar(person, "userName"),
+        _scalar(person, "authorName"),
+        _scalar(person, "creatorName"),
+        _scalar(person, "nickName"),
+        _scalar(person, "nickname"),
+        _scalar(person, "displayName"),
+        _scalar(person, "name"),
+    )
+
+
+def _scalar_subject(source: dict[str, object] | None, key: str) -> str | None:
+    value = _scalar(source, key)
+    if _looks_like_subject_id(value):
+        return value
+    return None
+
+
+def _scalar_display(source: dict[str, object] | None, key: str) -> str | None:
+    value = _scalar(source, key)
+    if _looks_like_subject_id(value):
+        return None
+    return value
+
+
+def _looks_like_subject_id(value: str | None) -> bool:
+    if value is None or value.strip() == "":
+        return False
+    if value.isdigit():
+        return True
+    normalized = value.upper()
+    if normalized.startswith("WB"):
+        return True
+    if normalized.startswith("WORKER_"):
+        return True
+    if normalized.startswith("V00_"):
+        return True
+    return False
 
 
 def _format_time(value: datetime) -> str:
