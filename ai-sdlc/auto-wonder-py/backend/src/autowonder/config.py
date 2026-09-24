@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     oss_artifact_bucket: str = Field(default="", validation_alias="OSS_ARTIFACT_BUCKET")
     oss_skill_bucket: str = Field(default="", validation_alias="OSS_SKILL_BUCKET")
     oss_backup_bucket: str = Field(default="", validation_alias="OSS_BACKUP_BUCKET")
+    scheduled_task_enabled: bool = Field(
+        default=True,
+        validation_alias="AUTOWONDER_SCHEDULED_TASK_ENABLED",
+    )
+    scheduled_task_scanner_enabled: bool = Field(
+        default=True,
+        validation_alias="AUTOWONDER_SCHEDULED_TASK_SCANNER_ENABLED",
+    )
+    scheduled_task_cluster_ready: bool = Field(
+        default=True,
+        validation_alias="AUTOWONDER_SCHEDULED_TASK_CLUSTER_READY",
+    )
 
     @property
     def resolved_database_url(self) -> str:

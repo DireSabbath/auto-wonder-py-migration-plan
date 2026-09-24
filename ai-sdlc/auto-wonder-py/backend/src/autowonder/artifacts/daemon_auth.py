@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.models import Dispatch, DispatchRecovery
 from autowonder.dispatch.query import execution_source_type
 from autowonder.executors.models import Executor
 from autowonder.executors.tokens import validate
+from autowonder.workitems.models import WorkitemExecutionControl
 
 _INTERACTION_MODES = frozenset(
     {"COMMENT_INTERACTION", "SIDE_INTERACTION", "CANONICAL_INTERACTION"}
@@ -63,6 +64,38 @@ def mutation_fenced(
     if dispatch is None or dispatch.status == "CANCELED" or cancel_requested:
         return True
     return execution_source_type(dispatch.source_type) == "WORKITEM" and workitem_closed
+
+
+async def load_mutation_fence(session: AsyncSession, dispatch_id: int) -> bool:
+    """取消请求、调度已取消，或工单交付已关闭时，业务产物不能再写。"""
+    dispatch = await session.scalar(
+        select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.is_deleted == 0).limit(1)
+    )
+    cancel_requested = False
+    workitem_closed = False
+    if dispatch is not None:
+        recovery = await session.scalar(
+            select(DispatchRecovery)
+            .where(
+                DispatchRecovery.tenant_id == dispatch.tenant_id,
+                DispatchRecovery.dispatch_id == dispatch.id,
+                DispatchRecovery.cancel_requested == 1,
+            )
+            .limit(1)
+        )
+        cancel_requested = recovery is not None
+        if execution_source_type(dispatch.source_type) == "WORKITEM":
+            control = await session.scalar(
+                select(WorkitemExecutionControl)
+                .where(
+                    WorkitemExecutionControl.tenant_id == dispatch.tenant_id,
+                    WorkitemExecutionControl.workitem_id == dispatch.workitem_id,
+                    WorkitemExecutionControl.closed == 1,
+                )
+                .limit(1)
+            )
+            workitem_closed = control is not None
+    return mutation_fenced(dispatch, cancel_requested, workitem_closed)
 
 
 async def authenticate(session: AsyncSession, dispatch_id: int, token: str | None) -> UploadAuth:

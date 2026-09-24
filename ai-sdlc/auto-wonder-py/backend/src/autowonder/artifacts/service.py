@@ -1,6 +1,10 @@
 """按工单或派发列出用户可见产物，并签发下载与预览。"""
 
-from sqlalchemy import select
+from typing import Any, cast
+
+from sqlalchemy import select, text
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -235,6 +239,67 @@ def read_preview(row: Artifact, storage: ObjectStorage) -> tuple[str, bytes]:
 
 def _previewable(name: str | None) -> bool:
     return file_extension(name) in _PREVIEW_EXTENSIONS
+
+
+def reported_artifact_statement(
+    tenant_id: int,
+    source_type: str,
+    source_id: int,
+    dispatch_id: int,
+    name: str,
+    artifact_type: str,
+    oss_ref: str,
+    size: int,
+) -> Any:
+    """与 Java insert 相同：同名冲突时复用主键并覆盖类型、引用和大小。"""
+    resolved = resolve_artifact_type(artifact_type, name)
+    statement = mysql_insert(Artifact).values(
+        tenant_id=tenant_id,
+        source_type=source_type,
+        workitem_id=source_id,
+        dispatch_id=dispatch_id,
+        name=name,
+        type=resolved,
+        oss_ref=oss_ref,
+        size=size,
+        meta_json=None,
+    )
+    return statement.on_duplicate_key_update(
+        id=text("LAST_INSERT_ID(id)"),
+        source_type=statement.inserted.source_type,
+        workitem_id=statement.inserted.workitem_id,
+        type=statement.inserted.type,
+        oss_ref=statement.inserted.oss_ref,
+        size=statement.inserted.size,
+        meta_json=statement.inserted.meta_json,
+    )
+
+
+async def record_reported_artifact(
+    session: AsyncSession,
+    tenant_id: int,
+    source_type: str,
+    source_id: int,
+    dispatch_id: int,
+    name: str,
+    artifact_type: str,
+    oss_ref: str,
+    size: int,
+) -> int:
+    """登记执行器上报的产物，并返回行 id。"""
+    result = await session.execute(
+        reported_artifact_statement(
+            tenant_id,
+            source_type,
+            source_id,
+            dispatch_id,
+            name,
+            artifact_type,
+            oss_ref,
+            size,
+        )
+    )
+    return cast(CursorResult[Any], result).lastrowid
 
 
 def _dispatch_text(dispatch_id: int | None) -> str:

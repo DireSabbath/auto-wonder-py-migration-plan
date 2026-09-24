@@ -2,6 +2,10 @@
 
 import json
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from autowonder.agents.models import Agent, AgentVersion
 from autowonder.core.errors import BizError, ErrorCode
 
 _MODES = {"MANUAL", "ASSISTED", "AUTO_PROPOSAL"}
@@ -43,6 +47,39 @@ def parse_identity(value: object | None) -> dict[str, object]:
 def evolution_mode_of_identity(value: object | None) -> str:
     """从身份快照读取演进模式。"""
     return evolution_mode_from(parse_identity(value).get("evolutionMode"))
+
+
+def accepts_runtime_delta(mode: str) -> bool:
+    """手动模式不接收运行时交上来的学习增量。"""
+    return mode != "MANUAL"
+
+
+async def resolve_runtime_evolution_mode(
+    session: AsyncSession,
+    tenant_id: int,
+    agent_id: int,
+) -> str:
+    """在线版本优先，没有则读草稿。员工或版本缺失、或租户不一致时按 ASSISTED。"""
+    agent = await session.scalar(
+        select(Agent).where(Agent.id == agent_id, Agent.is_deleted == 0).limit(1)
+    )
+    if agent is None or agent.tenant_id != tenant_id:
+        return "ASSISTED"
+    version_id: int | None
+    if agent.online_version_id is not None:
+        version_id = agent.online_version_id
+    else:
+        version_id = agent.editing_version_id
+    if version_id is None:
+        return "ASSISTED"
+    version = await session.scalar(
+        select(AgentVersion)
+        .where(AgentVersion.id == version_id, AgentVersion.is_deleted == 0)
+        .limit(1)
+    )
+    if version is None or version.tenant_id != tenant_id:
+        return "ASSISTED"
+    return evolution_mode_of_identity(version.identity_json)
 
 
 def compact_identity(payload: dict[str, object]) -> dict[str, object]:

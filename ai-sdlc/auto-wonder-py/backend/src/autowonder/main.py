@@ -13,6 +13,7 @@ from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
 from autowonder.api.spa import mount_spa
 from autowonder.artifacts.cli_router import router as cli_document_router
+from autowonder.artifacts.daemon_router import router as daemon_artifact_router
 from autowonder.artifacts.router import router as artifact_router
 from autowonder.audits.router import router as audit_router
 from autowonder.auth.router import router as auth_router
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(dispatch_router)
     app.include_router(trace_router)
     app.include_router(daemon_checkpoint_router)
+    app.include_router(daemon_artifact_router)
     app.include_router(artifact_router)
     app.include_router(cli_document_router)
     dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
