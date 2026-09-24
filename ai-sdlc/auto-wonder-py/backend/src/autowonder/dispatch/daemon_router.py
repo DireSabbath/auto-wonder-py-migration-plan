@@ -1,8 +1,8 @@
-"""Daemon 上传检查点。这条路径在鉴权白名单里，靠执行器令牌校验。"""
+"""Daemon 上传检查点，并续认领仍在执行的派发。这些路径靠执行器令牌校验。"""
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from autowonder.dispatch.checkpoint import (
     dispatch_by_id_statement,
     store_dispatch_from_row,
 )
+from autowonder.dispatch.recovery_claim import claim_http_response, claim_recovery
 from autowonder.storage.objects import get_object_storage
 
 MAX_CHECKPOINT_BYTES = 50 * 1024 * 1024
@@ -162,3 +163,14 @@ def _artifact_bucket() -> str:
     if settings.oss_artifact_bucket.strip() == "":
         return settings.oss_bucket
     return settings.oss_artifact_bucket
+
+
+@router.post("/{dispatchId}/recovery-claim")
+async def recovery_claim(
+    dispatchId: int,
+    token: Annotated[str, Query()],
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """续认领活动派发。成功时附上当前版本的环境变量，并禁止缓存。"""
+    status, body = await claim_recovery(session, dispatchId, token)
+    return claim_http_response(status, body)
