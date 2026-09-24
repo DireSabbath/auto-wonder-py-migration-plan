@@ -1,4 +1,4 @@
-"""验证命令：smoke、authchain、logscan 与 dispatch-e2e 检查正在运行的 Python 服务。"""
+"""验证命令：smoke、authchain、logscan、dispatch-e2e 与 pages。"""
 
 import argparse
 import json
@@ -46,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "dispatch-e2e":
         verdict = dispatch_e2e(args.base_url)
+    elif args.command == "pages":
+        from verify.pages import pages
+
+        verdict = pages(args.base_url)
     else:
         verdict = {
             "command": args.command,
