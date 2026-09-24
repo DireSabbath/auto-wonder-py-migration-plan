@@ -1,4 +1,4 @@
-"""验证命令：smoke、authchain、logscan、dispatch-e2e 与 pages。"""
+"""验证命令：smoke、authchain、logscan、dispatch-e2e、pages 与 squad-flow。"""
 
 import argparse
 import json
@@ -50,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.pages import pages
 
         verdict = pages(args.base_url)
+    elif args.command == "squad-flow":
+        from verify.squad_flow import squad_flow
+
+        verdict = squad_flow(args.base_url)
     else:
         verdict = {
             "command": args.command,

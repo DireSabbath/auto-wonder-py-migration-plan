@@ -108,6 +108,18 @@ class MockExecutor:
             }
         )
 
+    async def handoff_human(self, dispatch_id: int, workitem_id: int, user_id: int) -> None:
+        """当前步骤完成后把工单交给指定真人。"""
+        await self._send(
+            {
+                "type": "TASK_HANDOFF",
+                "dispatchId": dispatch_id,
+                "workitemId": workitem_id,
+                "to": str(user_id),
+                "toType": "HUMAN",
+            }
+        )
+
     async def restart_result(self, request_id: str, status: str) -> None:
         """回一条重启阶段。``RESTARTING`` 之后等新进程心跳才算完成。"""
         await self._send(
