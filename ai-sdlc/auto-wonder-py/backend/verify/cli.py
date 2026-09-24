@@ -63,6 +63,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.cli_scenes import cli_scenes
 
         verdict = cli_scenes(args.base_url)
+    elif args.command == "cli-dual":
+        from verify.cli_dual import cli_dual
+
+        verdict = cli_dual(args.base_url, args.java_url)
     elif args.command == "outbox":
         from verify.outbox_flow import outbox_flow
 
