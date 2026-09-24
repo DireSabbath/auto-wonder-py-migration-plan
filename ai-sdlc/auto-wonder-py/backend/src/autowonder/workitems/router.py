@@ -10,7 +10,11 @@ from autowonder.core.context import current_user_id, current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.db.session import get_session
+from autowonder.guidance.service import attach_interaction_statuses, create_for_comment
+from autowonder.workitems.comments import add_comment, list_comments, publish_mentions
+from autowonder.workitems.participants import get_mention_candidates, get_participants
 from autowonder.workitems.schemas import (
+    AddCommentRequest,
     AssignRequest,
     CreateWorkitemRequest,
     ScheduledStartRequest,
@@ -30,6 +34,8 @@ from autowonder.workitems.service import (
     update_scheduled_start,
     update_tags,
 )
+from autowonder.workitems.timeline import timeline, unified_timeline
+from autowonder.workitems.watchers import follow, list_watchers, unfollow
 
 router = APIRouter(
     prefix="/api/workitems",
@@ -113,7 +119,7 @@ async def list_items(
 @router.get("/{id}")
 async def get_item(id: int, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """工单详情。"""
-    return ok(await get_workitem(session, id))
+    return ok(await get_workitem(session, id, _workspace_id(), _user_id()))
 
 
 @router.post(
@@ -236,3 +242,91 @@ async def delete_item(id: int, session: AsyncSession = Depends(get_session)) -> 
     """删除工单。"""
     await delete_workitem(session, id, _workspace_id(), _user_id())
     return ok(None)
+
+
+@router.post(
+    "/{id}/comments",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "添加工作项评论"))],
+)
+async def add_comment_item(
+    id: int,
+    body: AddCommentRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """添加评论，并把 @ 数字员工写成指引投递。"""
+    comment, notices = await add_comment(
+        session, id, body.content_md, body.target_human_ids, _workspace_id(), _user_id()
+    )
+    await create_for_comment(
+        session,
+        _workspace_id(),
+        id,
+        comment.id,
+        body.content_md,
+        body.target_agent_ids,
+        _user_id(),
+    )
+    await session.commit()
+    await publish_mentions(session, notices)
+    return ok(comment)
+
+
+@router.get("/{id}/comments")
+async def list_comment_items(
+    id: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """列出评论。"""
+    return ok(await list_comments(session, id))
+
+
+@router.get("/{id}/timeline")
+async def timeline_item(id: int, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """事件时间线。"""
+    return ok(await timeline(session, id))
+
+
+@router.get("/{id}/unified-timeline")
+async def unified_timeline_item(
+    id: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """评论和系统事件混排，并附上指引状态。"""
+    items = await unified_timeline(session, id)
+    await attach_interaction_statuses(session, _workspace_id(), id, items)
+    return ok(items)
+
+
+@router.get("/{id}/participants")
+async def participant_items(
+    id: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """参与者。"""
+    return ok(await get_participants(session, id, _workspace_id()))
+
+
+@router.get("/{id}/mention-candidates")
+async def mention_candidate_items(
+    id: int,
+    q: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query()] = 50,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """@ 候选人。"""
+    return ok(await get_mention_candidates(session, id, _workspace_id(), q, limit))
+
+
+@router.post("/{id}/watch")
+async def watch_item(id: int, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """关注工单。这是个人订阅，沿用查看权限。"""
+    return ok(await follow(session, id, _workspace_id(), _user_id()))
+
+
+@router.delete("/{id}/watch")
+async def unwatch_item(id: int, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """取消关注。没有关注记录时仍返回未关注。"""
+    return ok(await unfollow(session, id, _workspace_id(), _user_id()))
+
+
+@router.get("/{id}/watchers")
+async def watcher_items(id: int, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """仍在工作空间内的关注人。"""
+    return ok(await list_watchers(session, id, _workspace_id()))

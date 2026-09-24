@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, Integer, String, Text, text
+from sqlalchemy import JSON, BigInteger, Computed, DateTime, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from autowonder.core.clock import now_local
@@ -49,7 +49,15 @@ class Dispatch(Base):
     idempotency_key: Mapped[str] = mapped_column(
         String(128), nullable=False, comment="幂等键 = workitemId+stepId+attempt"
     )
-    normalized_idempotency_key: Mapped[str | None] = mapped_column(String(137), nullable=True)
+    normalized_idempotency_key: Mapped[str | None] = mapped_column(
+        String(137),
+        Computed(
+            "CASE WHEN source_type = 'WORKITEM' "
+            "AND idempotency_key REGEXP '^[0-9]+:[0-9]+:[0-9]+$' "
+            "THEN CONCAT('WORKITEM:', idempotency_key) ELSE idempotency_key END",
+            persisted=True,
+        ),
+    )
     result_summary: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="执行结论/总结（无 CONCLUSION 产物时作队友结论）"
     )

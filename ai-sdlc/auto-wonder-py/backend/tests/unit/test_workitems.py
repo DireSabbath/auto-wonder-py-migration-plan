@@ -1,10 +1,12 @@
 """工单创建、流转、指派和派生字段。这些检查不连接 MySQL。"""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mysql
-from sqlalchemy.sql.elements import BindParameter, BooleanClauseList
+from sqlalchemy.sql.elements import BindParameter, BooleanClauseList, Null
 
 from autowonder.agents.models import Agent, AgentVersion
 from autowonder.core.errors import BizError, ErrorCode
@@ -82,6 +84,19 @@ class MemorySession:
             return _Result([], self._update(statement))
         return _Result(self._select(statement), None)
 
+    async def scalars(self, statement: object) -> object:
+        return _Result(self._select(statement), None)
+
+    async def delete(self, row: object) -> None:
+        if row in self._pending:
+            self._pending.remove(row)
+        if row in self.rows:
+            self.rows.remove(row)
+
+    @asynccontextmanager
+    async def begin_nested(self) -> AsyncIterator[None]:
+        yield
+
 
 class _Result:
     def __init__(self, rows: list[object], rowcount: int | None) -> None:
@@ -114,9 +129,8 @@ def _apply_defaults(row: object) -> None:
             elif code is not None and code.co_argcount == 1:
                 setattr(row, prop.key, arg(None))
             continue
-        arg = getattr(default, "arg", None)
-        if arg is not None:
-            setattr(row, prop.key, arg)
+        if getattr(default, "is_scalar", False):
+            setattr(row, prop.key, default.arg)
 
 
 def _select(self: MemorySession, statement: object) -> list[object]:
@@ -180,6 +194,9 @@ def _walk(node: object, found: list[tuple[str, str, object]]) -> None:
     if isinstance(key, str) and isinstance(right, BindParameter):
         found.append((key, operator, right.value))
         return
+    if isinstance(key, str) and isinstance(right, Null):
+        found.append((key, operator, None))
+        return
     element = getattr(node, "element", None)
     if element is not None and element is not node:
         _walk(element, found)
@@ -189,6 +206,8 @@ def _matches(row: object, comps: list[tuple[str, str, object]]) -> bool:
     for key, operator, value in comps:
         current = getattr(row, key)
         if operator == "eq" and current != value:
+            return False
+        if operator == "is_" and value is None and current is not None:
             return False
         if operator in {"is_not", "isnot"} and value is None and current is None:
             return False
@@ -486,9 +505,19 @@ def test_workitem_routes_require_login() -> None:
     assert "/api/workitems/{id}/assignee" in paths
     assert "/api/workitems/{id}/scheduled-start" in paths
     assert "/api/workitems/{id}/tags" in paths
+    assert "/api/workitems/{id}/comments" in paths
+    assert "/api/workitems/{id}/timeline" in paths
+    assert "/api/workitems/{id}/unified-timeline" in paths
+    assert "/api/workitems/{id}/participants" in paths
+    assert "/api/workitems/{id}/mention-candidates" in paths
+    assert "/api/workitems/{id}/watch" in paths
+    assert "/api/workitems/{id}/watchers" in paths
+    assert "/api/workitems/{id}/delivery-progress" not in paths
     response = client.get("/api/workitems")
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
+    assert client.get("/api/workitems/1/comments").status_code == 401
+    assert client.post("/api/workitems/1/watch").status_code == 401
 
 
 async def _ready_session() -> MemorySession:

@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from pydantic import Field
+
 from autowonder.core.clock import SHANGHAI
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.schema import ApiModel
@@ -101,6 +103,97 @@ class UpdateTagsRequest(ApiModel):
     """空列表清空标签。"""
 
     tags: list[str | None] | None = None
+
+
+class CommentView(ApiModel):
+    """评论。时间为上海本地钟，序列化成毫秒。"""
+
+    id: int
+    workitem_id: int
+    author_type: str
+    author_ref: int
+    content_md: str | None = None
+    gmt_create: datetime
+
+
+class AddCommentRequest(ApiModel):
+    """添加评论。数字员工和真人提及都可以省略。"""
+
+    content_md: str | None = None
+    target_agent_ids: list[int | None] | None = None
+    target_human_ids: list[int | None] | None = None
+
+
+class ParticipantView(ApiModel):
+    """参与者。``isAgent`` 与 Jackson 的布尔字段名一致。"""
+
+    user_id: int | None = None
+    target_type: str | None = None
+    name: str | None = None
+    display_id: str | None = None
+    role: str | None = None
+    role_name: str | None = None
+    agent: bool = Field(default=False, serialization_alias="isAgent")
+    online: bool = False
+    status: str | None = None
+    executor_status: str | None = None
+
+
+class CommentInteractionView(ApiModel):
+    """评论上挂着的指引投递。"""
+
+    guidance_id: int | None = None
+    dispatch_id: int | None = None
+    execution_status: str | None = None
+    target_agent_id: int | None = None
+    target_agent_name: str | None = None
+    status: str | None = None
+    error: str | None = None
+    reply_comment_id: int | None = None
+    reply_content: str | None = None
+    replied_at: datetime | None = None
+
+
+class TimelineItemView(ApiModel):
+    """统一时间线的一条评论或系统事件。"""
+
+    id: int | None = None
+    type: str | None = None
+    author_id: int | None = None
+    author_name: str | None = None
+    author_type: str | None = None
+    agent: bool = Field(default=False, serialization_alias="isAgent")
+    content: str | None = None
+    gmt_create: datetime | None = None
+    source_provider: str | None = None
+    source_external_workitem_id: str | None = None
+    source_external_url: str | None = None
+    interactions: list[CommentInteractionView] | None = None
+
+
+class EventView(ApiModel):
+    """工单事件。``detailJson`` 保持字符串。"""
+
+    id: int
+    event_type: str
+    from_val: str | None = None
+    to_val: str | None = None
+    actor_type: str | None = None
+    actor_ref: int | None = None
+    actor_name: str | None = None
+    actor_display_name: str | None = None
+    from_val_display: str | None = None
+    to_val_display: str | None = None
+    detail_json: str | None = None
+    gmt_create: datetime
+
+
+class WatchStateView(ApiModel):
+    """当前用户是否关注，以及仍在空间内的关注人数。"""
+
+    workitem_id: int
+    watched: bool
+    watcher_count: int
 
 
 class UpdateContentRequest(ApiModel):

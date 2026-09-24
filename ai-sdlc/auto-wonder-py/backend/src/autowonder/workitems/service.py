@@ -55,6 +55,7 @@ from autowonder.workitems.view import (
     render_workitem,
     shanghai_millis,
 )
+from autowonder.workitems.watchers import apply_watch, mark_watched
 
 logger = logging.getLogger(__name__)
 _SYSTEM_USER_ID = 0
@@ -160,9 +161,13 @@ async def create_with_origin(
     return await _detail(session, stored.id)
 
 
-async def get_workitem(session: AsyncSession, workitem_id: int) -> WorkitemView:
-    """读取未删除工单。外部协作快照尚未接入。"""
-    return await _detail(session, workitem_id)
+async def get_workitem(
+    session: AsyncSession, workitem_id: int, tenant_id: int, user_id: int
+) -> WorkitemView:
+    """读取未删除工单，并回填当前用户的关注状态。"""
+    view = await _detail(session, workitem_id)
+    await mark_watched(session, view, tenant_id, user_id)
+    return view
 
 
 async def list_workitems(
@@ -232,6 +237,7 @@ async def list_workitems(
     )
     rows = list(result.scalars().all())
     views = await _decorate_page(session, tenant_id, rows)
+    await apply_watch(session, views, tenant_id, current_user_id)
     return PageResult.model_validate(
         {
             "list": views,
@@ -887,6 +893,78 @@ async def _origin(session: AsyncSession, workitem: Workitem) -> Any:
         scheduled_task_id=task.id,
         scheduled_task_name=task.name,
     )
+
+
+async def rebind_for_interaction_rework(
+    session: AsyncSession,
+    tenant_id: int,
+    workitem_id: int,
+    target_agent_id: int,
+    target_sdlc_id: int,
+    target_step_id: int,
+    user_id: int,
+) -> None:
+    """把工单当前步骤和负责人改到评论触发的正式流程。不发布指派交付事件。"""
+    attempt = 0
+    while attempt < 3:
+        current = await _find_live(session, workitem_id)
+        if current is None or current.tenant_id != tenant_id:
+            raise BizError(ErrorCode.WORKITEM_NOT_FOUND)
+        route_matches = (
+            current.sdlc_id == target_sdlc_id and current.current_step_id == target_step_id
+        )
+        if not route_matches:
+            changed = await _cas(
+                session,
+                workitem_id,
+                tenant_id,
+                current.version,
+                {
+                    "sdlc_id": target_sdlc_id,
+                    "current_step_id": target_step_id,
+                    "modifier_id": user_id,
+                },
+                scheduled_set=False,
+            )
+            if changed == 0:
+                attempt += 1
+                continue
+            current = await _reload(session, workitem_id)
+        if current.assignee_type == "AGENT" and current.assignee_ref == target_agent_id:
+            return
+        from_ref = current.assignee_ref
+        from_type = current.assignee_type
+        changed = await _cas(
+            session,
+            workitem_id,
+            tenant_id,
+            current.version,
+            {
+                "assignee_type": "AGENT",
+                "assignee_ref": target_agent_id,
+                "modifier_id": user_id,
+            },
+            scheduled_set=False,
+        )
+        if changed == 0:
+            attempt += 1
+            continue
+        from_text = None
+        if from_ref is not None:
+            from_text = str(from_ref)
+        await _write_event(
+            session,
+            tenant_id,
+            workitem_id,
+            "ASSIGN",
+            from_text,
+            str(target_agent_id),
+            "HUMAN",
+            user_id,
+            assignment_detail(from_type, "AGENT"),
+        )
+        return
+    raise BizError(ErrorCode.WORKITEM_VERSION_CONFLICT)
 
 
 async def _live_in_tenant(session: AsyncSession, workitem_id: int, tenant_id: int) -> Workitem:
