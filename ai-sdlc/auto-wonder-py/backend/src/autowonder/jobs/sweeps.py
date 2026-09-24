@@ -300,23 +300,24 @@ async def feishu_inbox_drain() -> None:
             )
         )
         for row in rows:
+            previous_attempts = row.attempts
             claimed = await session.execute(
                 update(FeishuMessageInbox)
                 .where(
                     FeishuMessageInbox.id == row.id,
-                    FeishuMessageInbox.attempts == row.attempts,
+                    FeishuMessageInbox.attempts == previous_attempts,
                     FeishuMessageInbox.status.in_(("PENDING", "PROCESSING")),
                     FeishuMessageInbox.available_at <= now_local(),
                 )
                 .values(
                     status="PROCESSING",
-                    attempts=FeishuMessageInbox.attempts + 1,
+                    attempts=previous_attempts + 1,
                     available_at=now_local() + timedelta(seconds=120),
                 )
             )
             if rowcount(claimed) != 1:
                 continue
-            await _deliver_feishu(session, row)
+            await _deliver_feishu(session, row, previous_attempts)
         await session.commit()
 
 
@@ -395,14 +396,13 @@ async def external_operation_recovery() -> None:
 
 
 async def human_agent_participation_snapshot() -> None:
-    """每天为仍在用的工作空间排队一份参与度快照。"""
+    """每天为未删除的工作空间排队一份参与度快照。
+
+    与 Java ``WorkspaceDao.listActive`` 一样，停用（status=1）但仍未删除的空间也要刷新。
+    """
     data_through = datetime.now(SHANGHAI).date() - timedelta(days=1)
     async with SessionLocal() as session:
-        tenants = list(
-            await session.scalars(
-                select(Org).where(Org.status == 0, Org.is_deleted == 0)
-            )
-        )
+        tenants = list(await session.scalars(select(Org).where(Org.is_deleted == 0)))
     logger.info(
         "Participation nightly rebuild starting tenants=%s dataThrough=%s",
         len(tenants),
@@ -1111,9 +1111,13 @@ def _actor_id(binding: ExternalProjectBinding) -> int:
     return 0
 
 
-async def _deliver_feishu(session: AsyncSession, row: FeishuMessageInbox) -> None:
+async def _deliver_feishu(
+    session: AsyncSession,
+    row: FeishuMessageInbox,
+    previous_attempts: int,
+) -> None:
     binding = await session.get(FeishuRobotBinding, row.binding_id)
-    attempts = row.attempts + 1
+    attempts = previous_attempts + 1
     try:
         if (
             binding is not None
@@ -1133,7 +1137,7 @@ async def _deliver_feishu(session: AsyncSession, row: FeishuMessageInbox) -> Non
         )
         if binding is not None:
             await _feishu_health(session, binding, error)
-        status = "FAILED" if row.attempts >= 4 else "PENDING"
+        status = "FAILED" if previous_attempts >= 4 else "PENDING"
         await _finish_feishu(session, row, attempts, status, error)
 
 

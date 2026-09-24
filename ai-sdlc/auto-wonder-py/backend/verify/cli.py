@@ -87,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.parity import parity
 
         verdict = parity(args.base_url, args.java_url)
+    elif args.command == "jobs-dual":
+        from verify.jobs_dual import jobs_dual
+
+        verdict = jobs_dual()
     else:
         verdict = {
             "command": args.command,

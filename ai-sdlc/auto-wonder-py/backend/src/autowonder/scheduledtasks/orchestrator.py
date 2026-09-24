@@ -19,7 +19,7 @@ from autowonder.dispatch.handoff_rules import (
 )
 from autowonder.dispatch.models import Dispatch
 from autowonder.dispatch.pending import run_pending
-from autowonder.scheduledtasks.models import ScheduledTaskRun
+from autowonder.scheduledtasks.models import ScheduledTask, ScheduledTaskRun
 from autowonder.users.models import User
 from autowonder.workspaces.models import OrgMember
 
@@ -46,6 +46,7 @@ async def start_run(workspace_id: int, run_id: int, actor_id: int) -> None:
                     return
             if not await _owner_active(session, run):
                 await _fail(session, run, actor_id, "OWNER_INACTIVE")
+                await _pause_task(run.workspace_id, run.scheduled_task_id, actor_id)
                 return
             snapshot = _snapshot(run)
             version_id = _frozen_version(snapshot, run.initial_agent_id)
@@ -215,9 +216,7 @@ async def resume_paused(
     return True
 
 
-async def _latest_paused(
-    session: AsyncSession, workspace_id: int, run_id: int
-) -> Dispatch | None:
+async def _latest_paused(session: AsyncSession, workspace_id: int, run_id: int) -> Dispatch | None:
     rows = await session.scalars(
         select(Dispatch).where(
             Dispatch.tenant_id == workspace_id,
@@ -425,6 +424,30 @@ async def _pin_version(session: AsyncSession, dispatch: Dispatch, agent_version_
             "scheduled dispatch cannot be pinned to its frozen agent version",
         )
     dispatch.agent_version_id = agent_version_id
+
+
+async def _pause_task(workspace_id: int, task_id: int, actor_id: int) -> None:
+    """所有者不可用时把任务从当前状态改成 PAUSED。版本对不上就留给下一次。"""
+    async with SessionLocal() as session:
+        task = await session.get(ScheduledTask, task_id)
+        if task is None or task.workspace_id != workspace_id or task.version is None:
+            return
+        await session.execute(
+            update(ScheduledTask)
+            .where(
+                ScheduledTask.workspace_id == workspace_id,
+                ScheduledTask.id == task_id,
+                ScheduledTask.status == task.status,
+                ScheduledTask.version == task.version,
+                ScheduledTask.is_deleted == 0,
+            )
+            .values(
+                status="PAUSED",
+                modifier_id=actor_id,
+                version=ScheduledTask.version + 1,
+            )
+        )
+        await session.commit()
 
 
 async def _fail(session: AsyncSession, run: ScheduledTaskRun, actor_id: int, error: str) -> None:
