@@ -1,8 +1,10 @@
-"""验证命令：smoke 检查正在运行的 Python 服务。"""
+"""验证命令：smoke 与 authchain 检查正在运行的 Python 服务。"""
 
 import argparse
 import json
 from urllib.request import urlopen
+
+from verify.authchain import authchain
 
 
 def smoke(base_url: str) -> dict[str, object]:
@@ -24,6 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "smoke":
         verdict = smoke(args.base_url)
+    elif args.command == "authchain":
+        verdict = authchain(args.base_url)
     else:
         verdict = {
             "command": args.command,
