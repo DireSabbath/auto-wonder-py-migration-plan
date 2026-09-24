@@ -10,6 +10,13 @@ from autowonder.core.clock import now_local
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.db.rows import rowcount
 from autowonder.db.session import SessionLocal
+from autowonder.dispatch.handoff_rules import (
+    HandoffResult,
+    agent_result,
+    frozen_entry_step,
+    rejected_result,
+    scheduled_target_agent_id,
+)
 from autowonder.dispatch.models import Dispatch
 from autowonder.scheduledtasks.models import ScheduledTaskRun
 from autowonder.users.models import User
@@ -332,4 +339,184 @@ async def _fail(session: AsyncSession, run: ScheduledTaskRun, actor_id: int, err
         run.workspace_id,
         run.id,
         error,
+    )
+
+
+async def handoff_scheduled(
+    session: AsyncSession, source: Dispatch, target: str | None
+) -> HandoffResult:
+    """在同一次运行的冻结小队里交接。目标不在快照里就拒绝。"""
+    if source.source_type != "SCHEDULED_TASK_RUN" or source.workitem_id is None:
+        return rejected_result("DISPATCH_NOT_FOUND", "source dispatch is not a scheduled run")
+    if target is None or target.strip() == "":
+        return rejected_result("TARGET_UNRESOLVED", "scheduled handoff target is required")
+    run = await _load(session, source.tenant_id, source.workitem_id)
+    if run is None:
+        return rejected_result("RUN_NOT_FOUND", "scheduled run not found")
+    replay = await _handoff_replay(session, source)
+    if replay is not None:
+        return agent_result(replay.agent_id, replay.id)
+    try:
+        snapshot = _snapshot(run)
+        _frozen_version(snapshot, run.initial_agent_id)
+    except BizError as invalid:
+        return rejected_result("SCHEDULED_TASK_INVALID_STATE", str(invalid))
+    agent_id = scheduled_target_agent_id(snapshot, target)
+    if agent_id is None:
+        return rejected_result("TARGET_UNRESOLVED", "target is not in the frozen scheduled squad")
+    try:
+        return await _handoff_frozen_agent(session, source, run, snapshot, agent_id)
+    except BizError as invalid:
+        await _fail(session, run, 0, invalid.code + ": " + str(invalid))
+        return rejected_result("SCHEDULED_TASK_INVALID_STATE", str(invalid))
+
+
+async def _handoff_frozen_agent(
+    session: AsyncSession,
+    source: Dispatch,
+    run: ScheduledTaskRun,
+    snapshot: dict[str, object],
+    agent_id: int,
+) -> HandoffResult:
+    replay = await _handoff_replay(session, source)
+    if replay is not None:
+        return agent_result(replay.agent_id, replay.id)
+    if (
+        source.status != "SUCCEEDED"
+        or run.current_agent_id != source.agent_id
+        or run.current_step_id != source.sdlc_step_id
+    ):
+        return rejected_result(
+            "SOURCE_NOT_CURRENT",
+            "scheduled handoff source is not the completed current assignment",
+        )
+    version_id = _frozen_version(snapshot, agent_id)
+    sdlc_id, step_id = frozen_entry_step(snapshot, run.initial_agent_id, agent_id)
+    if run.sdlc_id is not None and step_id is None:
+        raise BizError(
+            ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+            "frozen target agent SDLC is missing",
+        )
+    moved = await session.execute(
+        update(ScheduledTaskRun)
+        .where(
+            ScheduledTaskRun.workspace_id == run.workspace_id,
+            ScheduledTaskRun.id == run.id,
+            ScheduledTaskRun.version == run.version,
+            ScheduledTaskRun.status.not_in(_TERMINAL),
+        )
+        .values(
+            sdlc_id=sdlc_id,
+            current_agent_id=agent_id,
+            current_step_id=step_id,
+            modifier_id=0,
+            version=ScheduledTaskRun.version + 1,
+        )
+    )
+    if rowcount(moved) != 1:
+        return rejected_result("RUN_VERSION_CONFLICT", "scheduled run changed during handoff")
+    downstream = await _enqueue_scheduled_handoff(session, run, source, agent_id, step_id)
+    await _pin_handoff_version(session, downstream, version_id)
+    await session.commit()
+    return agent_result(agent_id, downstream.id)
+
+
+async def _handoff_replay(session: AsyncSession, source: Dispatch) -> Dispatch | None:
+    return await session.scalar(
+        select(Dispatch)
+        .where(
+            Dispatch.tenant_id == source.tenant_id,
+            Dispatch.idempotency_key == "handoff:" + str(source.id),
+            Dispatch.is_deleted == 0,
+        )
+        .limit(1)
+    )
+
+
+async def _enqueue_scheduled_handoff(
+    session: AsyncSession,
+    run: ScheduledTaskRun,
+    source: Dispatch,
+    agent_id: int,
+    step_id: int | None,
+) -> Dispatch:
+    key = "handoff:" + str(source.id)
+    existing = await _handoff_replay(session, source)
+    if existing is not None:
+        return existing
+    dispatch = Dispatch(
+        tenant_id=run.workspace_id,
+        source_type="SCHEDULED_TASK_RUN",
+        workitem_id=run.id,
+        sdlc_step_id=step_id,
+        agent_id=agent_id,
+        status="PENDING",
+        attempt=source.attempt + 1,
+        idempotency_key=key,
+        delivery_source_dispatch_id=source.id,
+        creator_id=0,
+        modifier_id=0,
+        version=0,
+        is_deleted=0,
+        debug_log_enabled=0,
+    )
+    try:
+        async with session.begin_nested():
+            session.add(dispatch)
+            await session.flush()
+    except IntegrityError:
+        winner = await _handoff_replay(session, source)
+        if winner is None:
+            raise
+        return winner
+    return dispatch
+
+
+async def _pin_handoff_version(
+    session: AsyncSession, dispatch: Dispatch, agent_version_id: int
+) -> None:
+    if (
+        dispatch.source_type != "SCHEDULED_TASK_RUN"
+        or dispatch.agent_id is None
+        or agent_version_id <= 0
+    ):
+        raise BizError(
+            ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+            "scheduled dispatch cannot be pinned to its frozen agent version",
+        )
+    if dispatch.agent_version_id == agent_version_id:
+        return
+    if dispatch.agent_version_id is not None:
+        raise BizError(
+            ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+            "scheduled dispatch version pin was lost: dispatchId=" + str(dispatch.id),
+        )
+    result = await session.execute(
+        update(Dispatch)
+        .where(
+            Dispatch.id == dispatch.id,
+            Dispatch.tenant_id == dispatch.tenant_id,
+            Dispatch.source_type == "SCHEDULED_TASK_RUN",
+            Dispatch.agent_id == dispatch.agent_id,
+            Dispatch.status == "PENDING",
+            Dispatch.agent_version_id.is_(None),
+            Dispatch.is_deleted == 0,
+        )
+        .values(agent_version_id=agent_version_id, modifier_id=0)
+    )
+    if rowcount(result) == 1:
+        dispatch.agent_version_id = agent_version_id
+        return
+    session.expire(dispatch)
+    current = await session.get(Dispatch, dispatch.id)
+    if (
+        current is not None
+        and current.tenant_id == dispatch.tenant_id
+        and current.source_type == "SCHEDULED_TASK_RUN"
+        and current.agent_version_id == agent_version_id
+    ):
+        return
+    raise BizError(
+        ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+        "scheduled dispatch version pin was lost: dispatchId=" + str(dispatch.id),
     )

@@ -1,7 +1,7 @@
 """入站帧路由，对齐 ``InboundFrameRouter``。
 
 类型化帧会丢掉 Bean 上没有的键，所以这里按原始 JSON 分发。
-调度状态只在 Java 允许的来源集合里前进。交接和引导回执还没有接到对应服务。
+调度状态只在 Java 允许的来源集合里前进。
 """
 
 import json
@@ -21,7 +21,7 @@ from autowonder.dispatch.checkpoint import CheckpointEngine, SqlCheckpointRepo
 from autowonder.dispatch.models import Dispatch
 from autowonder.dispatch.recovery import execution_source
 from autowonder.scheduledtasks.capability import require_scheduled_capability
-from autowonder.ws.frames import task_result_ack
+from autowonder.ws.frames import task_handoff_result, task_result_ack
 from autowonder.ws.presence import (
     DispatchPresence,
     PresenceManager,
@@ -76,10 +76,6 @@ EXECUTOR_FAILURE_CATEGORIES = frozenset(
 )
 SYSTEM_USER_ID = 0
 MAX_ERROR_CHARS = 512
-_UNWIRED = (
-    "TASK_GUIDANCE_ACK",
-    "TASK_HANDOFF",
-)
 
 
 def ack_target(status: str) -> str | None:
@@ -260,12 +256,11 @@ class InboundFrameRouter:
         if frame_type == "QODER_MODEL_CATALOG_RESULT":
             await self._catalog_result(executor_session, parsed)
             return
-        if frame_type in _UNWIRED:
-            logger.info(
-                "inbound %s not connected executorId=%s",
-                frame_type,
-                executor_session.executor_id,
-            )
+        if frame_type == "TASK_GUIDANCE_ACK":
+            await self._guidance_ack(executor_session, parsed)
+            return
+        if frame_type == "TASK_HANDOFF":
+            await self._handoff(executor_session, parsed)
             return
         logger.info(
             "inbound unknown frame type=%s executorId=%s",
@@ -369,6 +364,11 @@ class InboundFrameRouter:
         )
         async with SessionLocal() as session:
             await _apply_ack(session, executor_session.tenant_id, dispatch_id)
+            from autowonder.guidance.reports import deliver_queued_for_dispatch
+
+            await deliver_queued_for_dispatch(
+                session, executor_session.tenant_id, dispatch_id
+            )
 
     async def _progress(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
         dispatch_id = _long(payload, "dispatchId")
@@ -379,6 +379,11 @@ class InboundFrameRouter:
         )
         async with SessionLocal() as session:
             await _apply_progress(session, executor_session.tenant_id, dispatch_id)
+            from autowonder.guidance.reports import deliver_queued_for_dispatch
+
+            await deliver_queued_for_dispatch(
+                session, executor_session.tenant_id, dispatch_id
+            )
 
     async def _result(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
         dispatch_id = _long(payload, "dispatchId")
@@ -446,6 +451,32 @@ class InboundFrameRouter:
                 dispatch_id,
                 payload.get("debugLog"),
             )
+            await _guidance_after_result(
+                session,
+                executor_session,
+                dispatch_id,
+                success,
+                failover,
+                accepted,
+                _text(payload, "error"),
+            )
+            embedded = payload.get("handoff")
+            if accepted and success and isinstance(embedded, dict):
+                from autowonder.dispatch.handoff import may_route_handoff
+
+                if await may_route_handoff(
+                    session,
+                    executor_session.tenant_id,
+                    executor_session.executor_id,
+                    dispatch_id,
+                ):
+                    await _route_handoff(
+                        executor_session,
+                        session,
+                        _long(payload, "workitemId"),
+                        dispatch_id,
+                        embedded,
+                    )
         await _send_result_ack(executor_session, dispatch_id, accepted)
 
     async def _artifact(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
@@ -548,6 +579,16 @@ class InboundFrameRouter:
                 dispatch_id,
                 durable,
             )
+            if paused:
+                from autowonder.guidance.reports import requeue_delivered_for_dispatch
+                from autowonder.guidance.workflow import on_paused as activate_waiting_rework
+
+                await requeue_delivered_for_dispatch(
+                    session, executor_session.tenant_id, dispatch_id
+                )
+                await activate_waiting_rework(
+                    session, executor_session.tenant_id, dispatch_id
+                )
         await _send_result_ack(executor_session, dispatch_id, paused)
 
     async def _pause_failed(
@@ -646,6 +687,102 @@ class InboundFrameRouter:
             payload,
         )
 
+    async def _guidance_ack(
+        self, executor_session: ExecutorSession, payload: dict[str, Any]
+    ) -> None:
+        from autowonder.core.errors import BizError, ErrorCode
+        from autowonder.guidance.reports import acknowledge, binding_for_inbound
+        from autowonder.guidance.workflow import apply_from_executor
+        from autowonder.scheduledtasks.capability import require_scheduled_capability
+
+        guidance_id = _long(payload, "guidanceId")
+        logger.info(
+            "inbound TASK_GUIDANCE_ACK guidanceId=%s status=%s executorId=%s",
+            guidance_id,
+            _text(payload, "status"),
+            executor_session.executor_id,
+        )
+        async with SessionLocal() as session:
+            dispatch_id, source_type = await binding_for_inbound(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                guidance_id,
+            )
+            if source_type == "SCHEDULED_TASK_RUN":
+                require_scheduled_capability()
+            frame_dispatch = _long(payload, "dispatchId")
+            if frame_dispatch > 0 and frame_dispatch != dispatch_id:
+                raise BizError(ErrorCode.NO_PERMISSION)
+            status = _text(payload, "status")
+            plan = payload.get("workflowPlan")
+            if isinstance(plan, dict) and status == "APPLIED":
+                try:
+                    created = await apply_from_executor(
+                        session,
+                        executor_session.tenant_id,
+                        executor_session.executor_id,
+                        dispatch_id,
+                        plan,
+                    )
+                except Exception as routing_failure:
+                    logger.warning(
+                        "workflow guidance routing failed guidanceId=%s dispatchId=%s "
+                        "executorId=%s",
+                        guidance_id,
+                        dispatch_id,
+                        executor_session.executor_id,
+                        exc_info=True,
+                    )
+                    await acknowledge(
+                        session,
+                        executor_session.tenant_id,
+                        executor_session.executor_id,
+                        guidance_id,
+                        "FAILED",
+                        "正式工作流程创建失败：" + str(routing_failure),
+                        None,
+                    )
+                    return
+                if created is None:
+                    await acknowledge(
+                        session,
+                        executor_session.tenant_id,
+                        executor_session.executor_id,
+                        guidance_id,
+                        "FAILED",
+                        "正式工作流程创建失败：无法解析目标员工、SDLC 或入口步骤",
+                        None,
+                    )
+                    return
+            await acknowledge(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                guidance_id,
+                status,
+                _text(payload, "error"),
+                _text(payload, "replyMarkdown"),
+            )
+
+    async def _handoff(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
+        dispatch_id = _long(payload, "dispatchId")
+        logger.info(
+            "inbound TASK_HANDOFF dispatchId=%s workitemId=%s to=%s toType=%s",
+            dispatch_id,
+            _long(payload, "workitemId"),
+            _text(payload, "to"),
+            _text(payload, "toType"),
+        )
+        async with SessionLocal() as session:
+            await _route_handoff(
+                executor_session,
+                session,
+                _long(payload, "workitemId"),
+                dispatch_id,
+                payload,
+            )
+
 
 async def _apply_ack(session: AsyncSession, tenant_id: int, dispatch_id: int) -> None:
     dispatch = await _load_dispatch(session, tenant_id, dispatch_id, None)
@@ -653,6 +790,69 @@ async def _apply_ack(session: AsyncSession, tenant_id: int, dispatch_id: int) ->
         return
     await _write_status(session, dispatch, "ACKED", None, None)
     await session.commit()
+
+
+async def _guidance_after_result(
+    session: AsyncSession,
+    executor_session: ExecutorSession,
+    dispatch_id: int,
+    success: bool,
+    failover: bool,
+    accepted: bool,
+    error: str | None,
+) -> None:
+    if not accepted:
+        return
+    from autowonder.guidance.reports import fail_for_dispatch, requeue_for_executor_failover
+
+    if failover:
+        await requeue_for_executor_failover(session, executor_session.tenant_id, dispatch_id)
+        return
+    if not success:
+        await fail_for_dispatch(session, executor_session.tenant_id, dispatch_id, error)
+
+
+async def _route_handoff(
+    executor_session: ExecutorSession,
+    session: AsyncSession,
+    workitem_id: int,
+    dispatch_id: int,
+    handoff: dict[str, Any],
+) -> None:
+    from autowonder.dispatch.handoff import handle
+    from autowonder.dispatch.handoff_rules import handoff_target_type, rejected_result
+
+    try:
+        result = await handle(
+            session,
+            executor_session.tenant_id,
+            workitem_id,
+            dispatch_id,
+            _text(handoff, "to"),
+            _text(handoff, "toType"),
+        )
+    except Exception as error:
+        logger.warning("handoff failed dispatchId=%s", dispatch_id, exc_info=True)
+        result = rejected_result("INTERNAL_ERROR", str(error))
+    try:
+        await executor_session.send_text(
+            task_handoff_result(
+                dispatch_id,
+                workitem_id,
+                result.status,
+                result.downstream_dispatch_id,
+                handoff_target_type(result.status),
+                result.target_ref,
+                result.reason_code,
+                result.message,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "handoff result send failed dispatchId=%s executorId=%s",
+            dispatch_id,
+            executor_session.executor_id,
+        )
 
 
 async def _apply_progress(session: AsyncSession, tenant_id: int, dispatch_id: int) -> None:
