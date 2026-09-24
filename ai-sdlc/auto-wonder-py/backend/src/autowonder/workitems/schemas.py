@@ -1,6 +1,7 @@
 """工单请求和响应。JSON 字段使用 camelCase。"""
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import Field
 
@@ -201,6 +202,151 @@ class UpdateContentRequest(ApiModel):
 
     title: str | None = None
     content_md: str | None = None
+
+
+class SubStepView(ApiModel):
+    """交付步骤里的一个子动作。"""
+
+    name: str
+    status: str
+
+
+class StepUsageView(ApiModel):
+    """一步或一个数字员工累加后的 token 与 credits。"""
+
+    model: str | None = None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    reasoning_tokens: int
+    credits: Decimal | None = None
+
+
+class DispatchAttemptView(ApiModel):
+    """同一步骤上的一次派发。``startedAt`` 是毫秒时间戳。"""
+
+    dispatch_id: int | None = None
+    executor_name: str | None = None
+    status: str | None = None
+    resume_mode: str | None = None
+    error: str | None = None
+    started_at: datetime | None = None
+    duration_ms: int | None = None
+    can_continue: bool
+    can_pause: bool
+
+
+class DeliveryStepView(ApiModel):
+    """SDLC 步骤在交付进度里的状态。"""
+
+    step_id: int | None = None
+    step_key: str | None = None
+    name: str | None = None
+    status: str | None = None
+    plan_status: str | None = None
+    source_attempt: int | None = None
+    executor_name: str | None = None
+    error: str | None = None
+    sub_steps: list[SubStepView] | None = None
+    duration_ms: int | None = None
+    attempts: list[DispatchAttemptView]
+    usage: StepUsageView | None = None
+
+
+class AgentDeliveryProgressView(ApiModel):
+    """一个数字员工自己的 SDLC 进度。"""
+
+    agent_id: int
+    agent_name: str | None = None
+    status: str
+    duration_ms: int | None = None
+    current_activity: str | None = None
+    steps: list[DeliveryStepView]
+    usage: StepUsageView | None = None
+
+
+class WorkflowPlanStepView(ApiModel):
+    """运行时宣布的一步计划。"""
+
+    step_key: str | None = None
+    name: str | None = None
+    plan_status: str
+    source_attempt: int | None = None
+
+
+class WorkflowPlanView(ApiModel):
+    """最新一份可套用的工作流计划。"""
+
+    revision: int
+    agent_id: int | None = None
+    agent_name: str | None = None
+    target_step_id: str
+    reason: str | None = None
+    source_guidance_ids: list[int | None]
+    steps: list[WorkflowPlanStepView]
+
+
+class ProcessGraphNodeView(ApiModel):
+    """流程图节点。派发节点的 ``startedAt`` 是毫秒时间戳。"""
+
+    key: str
+    dispatch_id: int | None = None
+    agent_id: int | None = None
+    agent_name: str | None = None
+    step_id: int | None = None
+    step_name: str | None = None
+    status: str | None = None
+    started_at: datetime | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+    trigger_comment_id: int | None = None
+
+
+class ProcessGraphEdgeView(ApiModel):
+    """流程图上的交接、返工或恢复。"""
+
+    source_key: str
+    target_key: str
+    type: str
+    source_dispatch_id: int | None = None
+    target_dispatch_id: int | None = None
+    comment_id: int | None = None
+    label: str
+
+
+class ProcessGraphView(ApiModel):
+    """正式派发组成的交付过程图。"""
+
+    nodes: list[ProcessGraphNodeView]
+    edges: list[ProcessGraphEdgeView]
+
+
+class WorkitemUsageRunView(ApiModel):
+    """一个数字员工在本工单里的一轮 credits。"""
+
+    agent_id: int | None = None
+    agent_name: str | None = None
+    run_index: int
+    label: str
+    credits: Decimal
+
+
+class WorkitemUsageView(ApiModel):
+    """工单 credits 总计，以及按执行轮次拆开的明细。"""
+
+    credits: Decimal
+    runs: list[WorkitemUsageRunView]
+
+
+class DeliveryProgressView(ApiModel):
+    """工单交付进度。没有正数 credits 时 ``totalUsage`` 为空。"""
+
+    steps: list[DeliveryStepView]
+    agents: list[AgentDeliveryProgressView]
+    workflow_plan: WorkflowPlanView | None = None
+    process_graph: ProcessGraphView
+    total_duration_ms: int | None = None
+    total_usage: WorkitemUsageView | None = None
 
 
 def parse_java_date(value: object) -> datetime | None:

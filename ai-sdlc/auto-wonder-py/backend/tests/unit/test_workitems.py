@@ -512,11 +512,12 @@ def test_workitem_routes_require_login() -> None:
     assert "/api/workitems/{id}/mention-candidates" in paths
     assert "/api/workitems/{id}/watch" in paths
     assert "/api/workitems/{id}/watchers" in paths
-    assert "/api/workitems/{id}/delivery-progress" not in paths
+    assert "/api/workitems/{id}/delivery-progress" in paths
     response = client.get("/api/workitems")
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
     assert client.get("/api/workitems/1/comments").status_code == 401
+    assert client.get("/api/workitems/1/delivery-progress").status_code == 401
     assert client.post("/api/workitems/1/watch").status_code == 401
 
 

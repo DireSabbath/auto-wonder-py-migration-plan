@@ -13,6 +13,7 @@ from autowonder.db.session import get_session
 from autowonder.guidance.service import attach_interaction_statuses, create_for_comment
 from autowonder.workitems.comments import add_comment, list_comments, publish_mentions
 from autowonder.workitems.participants import get_mention_candidates, get_participants
+from autowonder.workitems.progress import get_delivery_progress
 from autowonder.workitems.schemas import (
     AddCommentRequest,
     AssignRequest,
@@ -293,6 +294,14 @@ async def unified_timeline_item(
     items = await unified_timeline(session, id)
     await attach_interaction_statuses(session, _workspace_id(), id, items)
     return ok(items)
+
+
+@router.get("/{id}/delivery-progress")
+async def delivery_progress_item(
+    id: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """交付进度。步骤耗时来自运行时事件，总耗时来自正式派发。"""
+    return ok(await get_delivery_progress(session, id, _workspace_id()))
 
 
 @router.get("/{id}/participants")
