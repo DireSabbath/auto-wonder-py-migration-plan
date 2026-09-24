@@ -2,7 +2,6 @@
 
 import base64
 import binascii
-import copy
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,7 +41,11 @@ from autowonder.agents.service import (
 )
 from autowonder.api.access import WorkspaceAccessLevel
 from autowonder.artifacts.cli_tokens import CredentialType as CliCredentialType
-from autowonder.artifacts.cli_tokens import mint_download_token, mint_upload_token
+from autowonder.artifacts.cli_tokens import (
+    deployment_endpoint,
+    mint_download_token,
+    mint_upload_token,
+)
 from autowonder.artifacts.documents import (
     ArtifactOwner,
     delete_requirement_document,
@@ -114,7 +117,7 @@ from autowonder.executors.service import (
     list_by_agent,
 )
 from autowonder.guidance.service import create_for_comment
-from autowonder.mcp.catalog import list_tools
+from autowonder.mcp.catalog import bind_tool_catalog
 from autowonder.mcp.principal import CredentialType, Principal
 from autowonder.mcp.skills import get_platform_skill, list_platform_skills
 from autowonder.memories.schemas import CreateMemoryRequest, ReviewRequest, UpdateMemoryRequest
@@ -573,7 +576,8 @@ async def list_tools_for_principal(
     principal: Principal,
 ) -> list[dict[str, Any]]:
     """按凭证级别裁剪工具，并改写 workspaceId 与模型说明。"""
-    tools = [copy.deepcopy(tool) for tool in list_tools()]
+    server_url, runtime_version = await deployment_endpoint(session)
+    tools = bind_tool_catalog(server_url, runtime_version)
     scope_level = principal.access_level
     if scope_level is None:
         workspaces = await list_by_user(session, principal.user_id)
@@ -582,9 +586,7 @@ async def list_tools_for_principal(
         if read_desc is not None:
             tools = _apply_workspace_descriptions(tools, read_desc, write_desc)
         return await _apply_executor_model_descriptions(tools)
-    tools = [
-        tool for tool in tools if scope_level.allows(tool_access(str(tool["name"])).level)
-    ]
+    tools = [tool for tool in tools if scope_level.allows(tool_access(str(tool["name"])).level)]
     scoped = await get_current(session, principal.workspace_id)  # type: ignore[arg-type]
     workspace_name = "null" if scoped.name is None else scoped.name
     desc = "Workspace: " + str(principal.workspace_id) + "=" + workspace_name

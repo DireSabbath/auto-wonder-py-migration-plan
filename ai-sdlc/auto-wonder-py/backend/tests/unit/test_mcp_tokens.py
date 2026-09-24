@@ -27,6 +27,7 @@ from autowonder.mcp.tokens import (
     list_tokens,
     revoke_token,
 )
+from autowonder.platform.branding import normalize_public_base_url, normalize_runtime_version
 from autowonder.workitems.models import Workitem
 from tests.unit.test_workitems import MemorySession
 
@@ -251,4 +252,16 @@ def test_platform_skills_and_tool_names() -> None:
     assert len(tools) == 112
     assert tools[0]["name"] == "autowonder.list_projects"
     assert tools[0]["description"].startswith("List the AutoWonder workspaces")
+    assert tools[0]["outputSchema"]["required"] == ["items"]
+    assert tools[0]["inputSchema"]["properties"] == {}
+    upload = next(tool for tool in tools if tool["name"] == "autowonder.workitem_cli_upload_token")
+    settings = get_settings()
+    command = (
+        "npx -y autowonder@"
+        + normalize_runtime_version(settings.recommended_runtime_version)
+        + " workitem upload --server-url "
+        + normalize_public_base_url(settings.public_base_url)
+    )
+    assert command in upload["description"]
+    assert "workspaceId" == tools[1]["inputSchema"]["required"][0]
     assert len({tool["name"] for tool in tools}) == 112
