@@ -1,6 +1,6 @@
 """SPA 回退不挡住后注册的路由，也不改写 /api 的 404。"""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from autowonder.api.errors import install_exception_handlers
@@ -22,6 +22,10 @@ def test_spa_fallback_leaves_later_routes_and_api_404(tmp_path) -> None:
     def boom() -> None:
         raise IllegalArgumentError("invalid context content ref")
 
+    @app.get("/status.taobao")
+    def status_taobao() -> Response:
+        return Response("missing", status_code=404)
+
     client = TestClient(app)
     illegal = client.get("/__illegal")
     assert illegal.status_code == 200
@@ -35,3 +39,6 @@ def test_spa_fallback_leaves_later_routes_and_api_404(tmp_path) -> None:
     assert script.text == "js"
     missing_api = client.get("/api/missing-page")
     assert missing_api.status_code == 404
+    marker = client.get("/status.taobao")
+    assert marker.status_code == 404
+    assert marker.text == "missing"

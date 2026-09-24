@@ -109,6 +109,47 @@ def test_auth_whitelist_matches_filter_rules() -> None:
     assert not is_login_only_request("GET", "/api/workitems")
 
 
+def test_status_taobao_follows_the_java_marker(tmp_path, monkeypatch) -> None:
+    from autowonder.api import meta
+
+    marker = tmp_path / "status.taobao"
+    monkeypatch.setattr(meta, "STATUS_MARKER", marker)
+    client = TestClient(create_app())
+    missing = client.get("/status.taobao")
+    assert missing.status_code == 404
+    assert missing.text == (
+        "HealthCheckController can not found META-INF/resources/status.taobao, "
+        "please check app status.; server maybe in rebooting..."
+    )
+    marker.write_text("ok", encoding="utf-8")
+    ready = client.get("/status.taobao")
+    assert ready.status_code == 200
+    assert ready.text == "success"
+
+
+def test_missing_json_body_uses_the_java_param_envelope() -> None:
+    client = TestClient(create_app())
+    missing = client.post("/api/auth/login")
+    assert missing.status_code == 400
+    assert missing.json()["code"] == "10001"
+    assert missing.json()["message"] == "参数不合法"
+    assert missing.json()["data"] is None
+    broken = client.post(
+        "/api/auth/login",
+        content=b"{",
+        headers={"content-type": "application/json"},
+    )
+    assert broken.status_code == 400
+    assert broken.json()["code"] == "10001"
+    form = client.post("/api/daemon/dispatches/1/checkpoint")
+    assert form.status_code == 200
+    assert form.json()["code"] == "10000"
+    assert form.json()["message"] == "系统内部错误"
+    usage = client.post("/api/daemon/tasks/1/usage")
+    assert usage.status_code == 400
+    assert usage.json()["code"] == "10001"
+
+
 def test_hello_envelope() -> None:
     client = TestClient(create_app())
     response = client.get("/api/hello")

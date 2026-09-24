@@ -27,6 +27,9 @@ def mount_spa(app: FastAPI, dist: Path) -> None:
         path = request.url.path
         if path.startswith("/api") or path.startswith("/ws"):
             return response
+        # 已经进了控制器的 404 是接口结果。Java 的 SPA 只接管没人处理的无点路径。
+        if request.scope.get("endpoint") is not None:
+            return response
         if request.method != "GET" and request.method != "HEAD":
             return response
         return FileResponse(index)

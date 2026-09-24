@@ -39,7 +39,9 @@ def test_daemon_comment_routes_are_registered() -> None:
     assert "post" in paths["/api/daemon/dispatches/{dispatchId}/comments"]
     assert "post" in paths["/api/daemon/dispatches/{dispatchId}/workitem-status"]
     response = client.post("/api/daemon/dispatches/500/comments")
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["code"] == "10000"
+    assert response.json()["message"] == "系统内部错误"
 
 
 def test_target_human_ids_follow_java_number_rules() -> None:
