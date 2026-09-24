@@ -1,6 +1,7 @@
 """Aone OpenAPI 客户端，以及项目、工单查询。每次请求都先核对开关。"""
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -395,7 +396,7 @@ def list_status_rules(
 def create_comment(
     client: AoneClient,
     config: AoneConfig,
-    workitem_id: str,
+    workitem_id: str | None,
     staff_id: str | None,
     content: str,
 ) -> ExternalComment:
@@ -410,11 +411,19 @@ def create_comment(
             "content": content,
         },
     )
+    external_id = _first(_str(result, "id"), _str(result, "commentId"))
+    if external_id is None:
+        external_id = _comment_id_from_message(_str(result, "message"))
+    source_status = "ACTIVE"
+    if result.get("isDeleted") is True:
+        source_status = "DELETED"
     comment = ExternalComment(
-        external_id=_str(result, "id"),
+        external_id=external_id,
         content_md=content,
         author_staff_id=staff_id,
         external_workitem_id=workitem_id,
+        source_status=source_status,
+        updated_at=_date(_first(_str(result, "updatedAt"), _str(result, "gmtModified"))),
     )
     return comment
 
@@ -422,9 +431,9 @@ def create_comment(
 def update_status(
     client: AoneClient,
     config: AoneConfig,
-    workitem_id: str,
+    workitem_id: str | None,
     staff_id: str | None,
-    status_name: str,
+    status_name: str | None,
 ) -> None:
     """回写状态。"""
     client.post_form(
@@ -437,7 +446,7 @@ def update_status(
 def update_content(
     client: AoneClient,
     config: AoneConfig,
-    workitem_id: str,
+    workitem_id: str | None,
     staff_id: str | None,
     title: str | None,
     content_md: str | None,
@@ -721,6 +730,15 @@ def _from_millis(millis: int) -> datetime:
 def _format_time(value: datetime) -> str:
     aware = value if value.tzinfo is not None else value.replace(tzinfo=_SHANGHAI)
     return aware.astimezone(_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _comment_id_from_message(message: str | None) -> str | None:
+    if message is None or message.strip() == "":
+        return None
+    match = re.search(r"comment\s+id\s*:?\s*(\d+)", message, re.IGNORECASE)
+    if match is None:
+        return None
+    return match.group(1)
 
 
 def _str(obj: dict[str, object], key: str) -> str | None:

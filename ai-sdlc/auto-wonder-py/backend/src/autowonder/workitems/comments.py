@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.debuglogs.sanitizer import java_is_blank
+from autowonder.integrations.comment_outbound import record_outbound_comment
 from autowonder.notifications.service import publish
 from autowonder.users.models import User
 from autowonder.workitems.models import Workitem, WorkitemComment, WorkitemCommentMention
@@ -57,6 +58,15 @@ async def add_comment(
     )
     session.add(comment)
     await session.flush()
+    await record_outbound_comment(
+        session,
+        tenant_id,
+        workitem_id,
+        comment.id,
+        "HUMAN",
+        user_id,
+        content_md,
+    )
     await _persist_mentions(session, tenant_id, workitem_id, comment.id, humans)
     await _write_event(
         session, tenant_id, workitem_id, "COMMENT", None, None, "HUMAN", user_id, None
@@ -98,6 +108,15 @@ async def add_agent_comment(
     )
     session.add(comment)
     await session.flush()
+    await record_outbound_comment(
+        session,
+        tenant_id,
+        workitem_id,
+        comment.id,
+        "AGENT",
+        agent_id,
+        content_md,
+    )
     await _persist_mentions(session, tenant_id, workitem_id, comment.id, humans)
     await _write_event(
         session, tenant_id, workitem_id, "COMMENT", None, None, "AGENT", agent_id, None

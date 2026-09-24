@@ -10,6 +10,7 @@ import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote_plus
 
 import httpx
 from sqlalchemy import select
@@ -19,11 +20,15 @@ from autowonder.db.session import SessionLocal
 from autowonder.integrations.aone_codec import aone_enabled
 from autowonder.integrations.aone_outbox import dispatch_pending
 from autowonder.integrations.aone_service import crypto
+from autowonder.integrations.comment_outbound import record_outbound_comment
 from autowonder.integrations.models import (
     ExternalCommentLink,
     ExternalProjectBinding,
+    ExternalWorkitemLink,
     IntegrationOutbox,
 )
+from autowonder.integrations.operation_keys import aone_comment_key, operation_marker
+from autowonder.workitems.models import WorkitemComment
 
 _COMMENT = "outbox-live-body"
 _EXTERNAL_ID = "88001"
@@ -125,6 +130,17 @@ class _Chain:
         return body
 
     async def _deliver(self, tenant_id: int, workitem_id: int, aone_base: str) -> None:
+        self._api(
+            "POST",
+            "/api/workitems/" + str(workitem_id) + "/comments",
+            self._access,
+            {"contentMd": _COMMENT},
+        )
+        comment_id = _json_get(self._document, "data.id")
+        self._expect("comment", _positive_id(comment_id), "comment id")
+        if self.stopped != "":
+            return
+        marker = operation_marker(aone_comment_key(workitem_id, int(comment_id)))
         async with SessionLocal() as session:
             binding = ExternalProjectBinding(
                 tenant_id=tenant_id,
@@ -142,24 +158,33 @@ class _Chain:
             )
             session.add(binding)
             await session.flush()
-            row = IntegrationOutbox(
-                tenant_id=tenant_id,
-                provider="AONE",
-                binding_id=binding.id,
-                workitem_id=workitem_id,
-                event_type="COMMENT_CREATE",
-                payload_json={
-                    "externalWorkitemId": "WI-outbox",
-                    "content": _COMMENT,
-                    "commentId": 1,
-                },
-                operation_key="outbox-live-" + str(int(time.time())),
-                lock_version=0,
-                status="PENDING",
-                retry_count=0,
+            session.add(
+                ExternalWorkitemLink(
+                    tenant_id=tenant_id,
+                    provider="AONE",
+                    binding_id=binding.id,
+                    external_project_id="proj-outbox",
+                    external_workitem_id="WI-outbox",
+                    workitem_id=workitem_id,
+                )
             )
-            session.add(row)
             await session.flush()
+            comment = await session.get(WorkitemComment, int(comment_id))
+            await record_outbound_comment(
+                session,
+                tenant_id,
+                workitem_id,
+                int(comment_id),
+                comment.author_type,
+                comment.author_ref,
+                comment.content_md,
+            )
+            row = await session.scalar(
+                select(IntegrationOutbox).where(
+                    IntegrationOutbox.binding_id == binding.id,
+                    IntegrationOutbox.event_type == "COMMENT_CREATE",
+                )
+            )
             sent = await dispatch_pending(session, 20)
             await session.commit()
             await session.refresh(row)
@@ -175,11 +200,13 @@ class _Chain:
         if row.status != "SUCCEEDED":
             note = row.status + " " + (row.last_error or "")
         self._expect("delivered", row.status == "SUCCEEDED" and sent == 1, note)
+        decoded = unquote_plus(_Handler.capture.body)
         received = (
             _Handler.capture.path.endswith("/issue/openapi/IssueTopService/createComment")
-            and _COMMENT in _Handler.capture.body
+            and _COMMENT in decoded
+            and marker in decoded
         )
-        self._expect("received", received, "fake Aone stored the comment body")
+        self._expect("received", received, "fake Aone stored the formatted comment")
         linked = link is not None and link.direction == "OUTBOUND"
         self._expect("linked", linked, "outbound comment link is stored")
 
