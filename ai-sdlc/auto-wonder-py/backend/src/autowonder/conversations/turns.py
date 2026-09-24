@@ -4,8 +4,9 @@ import base64
 import hashlib
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import text
+from sqlalchemy import func, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.conversations.constants import (
@@ -62,6 +63,7 @@ from autowonder.conversations.transport import (
 from autowonder.core.clock import now_local
 from autowonder.core.context import current_request_id
 from autowonder.core.errors import BizError, ErrorCode, IllegalArgumentError
+from autowonder.db.rows import rowcount
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +163,21 @@ class _Pending:
     request_id: str | None
     system_prompt: str
     dispatch_attempt: int
+    source_context: str | None
+
+
+@dataclass
+class StaleTurnRecovery:
+    """一次卡住轮次在提交前攒下的卡片和待下发轮次。"""
+
+    settled: list[AgentConversationElicitation]
+    pending: _Pending | None
+
+
+@dataclass
+class _StagedDispatch:
+    pending: _Pending | None
+    changed: bool
 
 
 async def submit_inbound(
@@ -271,6 +288,7 @@ async def deliver_turn(session: AsyncSession, pending: _Pending) -> None:
         pending.system_prompt,
         pending.dispatch_attempt,
         pending.request_id,
+        pending.source_context,
     )
 
 
@@ -347,15 +365,25 @@ async def _prepare_inserted(
         current_request_id(),
         prompt,
         1,
+        turn.source_context,
     )
 
 
 async def _promote(session: AsyncSession, conversation: AgentConversation) -> _Pending | None:
+    staged = await _stage_next_dispatch(session, conversation)
+    if staged.changed:
+        await session.commit()
+    return staged.pending
+
+
+async def _stage_next_dispatch(
+    session: AsyncSession, conversation: AgentConversation
+) -> _StagedDispatch:
     if await find_processing_inbound(session, conversation.tenant_id, conversation.id) is not None:
-        return None
+        return _StagedDispatch(None, False)
     queued = await find_next_queued_inbound(session, conversation.tenant_id, conversation.id)
     if queued is None:
-        return None
+        return _StagedDispatch(None, False)
     try:
         version_id = await _online_version_id(session, conversation.agent_id)
         executor_id = await select_executor(
@@ -374,24 +402,158 @@ async def _promote(session: AsyncSession, conversation: AgentConversation) -> _P
             STATUS_FAILED,
             "conversation executor compatibility failed: " + str(error),
         )
-        await session.commit()
-        return None
+        return _StagedDispatch(None, True)
     if executor_id is None:
-        return None
+        return _StagedDispatch(None, False)
     moved = await update_status_if_current(
         session, conversation.tenant_id, queued.id, STATUS_QUEUED, STATUS_PROCESSING, None
     )
     if moved != 1:
-        return None
+        return _StagedDispatch(None, False)
     recorded = await record_dispatch_attempt(
         session, conversation.tenant_id, conversation.id, queued.id
     )
     if recorded != 1:
-        return None
+        return _StagedDispatch(None, False)
     await _bind_executor(session, conversation.tenant_id, conversation, executor_id)
     prompt = await _refresh_prompt(session, conversation.tenant_id, conversation, version_id)
-    await session.commit()
-    return _Pending(conversation, queued.id, queued.content, queued.request_id, prompt, 1)
+    return _StagedDispatch(
+        _Pending(
+            conversation,
+            queued.id,
+            queued.content,
+            queued.request_id,
+            prompt,
+            1,
+            queued.source_context,
+        ),
+        True,
+    )
+
+
+async def recover_stale_turn(
+    session: AsyncSession,
+    turn: AgentConversationTurn,
+    conversation: AgentConversation,
+    cutoff: datetime,
+    action: str,
+) -> StaleTurnRecovery:
+    """次数用尽则失败并准备下一条排队；否则认领后重新绑定执行器，等提交后再下发。"""
+    if action.startswith("skip"):
+        return StaleTurnRecovery([], None)
+    if action == "fail":
+        return await _fail_stale_turn(session, turn, conversation)
+    return await _redeliver_stale_turn(session, turn, conversation, cutoff)
+
+
+async def send_prepared_turn(session: AsyncSession, pending: _Pending) -> None:
+    """提交之后把准备好的轮次交给执行器。失败时改写终态并继续下一条。"""
+    await _send(session, pending)
+
+
+async def _fail_stale_turn(
+    session: AsyncSession,
+    turn: AgentConversationTurn,
+    conversation: AgentConversation,
+) -> StaleTurnRecovery:
+    error = (
+        "conversation runtime did not acknowledge after "
+        + str(turn.dispatch_attempt)
+        + " delivery attempts"
+    )
+    finalized = await update_inbound_if_processing(
+        session,
+        turn.tenant_id,
+        turn.conversation_id,
+        turn.id,
+        STATUS_FAILED,
+        error,
+    )
+    if finalized != 1:
+        return StaleTurnRecovery([], None)
+    settled = await settle_pending_for_turn(session, turn.tenant_id, turn.id)
+    logger.warning(
+        "conversation stale turn exhausted delivery attempts conversationId=%s "
+        "turnId=%s attempts=%s",
+        turn.conversation_id,
+        turn.id,
+        turn.dispatch_attempt,
+    )
+    staged = await _stage_next_dispatch(session, conversation)
+    return StaleTurnRecovery(settled, staged.pending)
+
+
+async def _redeliver_stale_turn(
+    session: AsyncSession,
+    turn: AgentConversationTurn,
+    conversation: AgentConversation,
+    cutoff: datetime,
+) -> StaleTurnRecovery:
+    try:
+        version_id = await _online_version_id(session, conversation.agent_id)
+        executor_id = await select_executor(
+            session,
+            conversation.tenant_id,
+            conversation.agent_id,
+            version_id,
+            conversation.executor_id,
+        )
+    except ProtocolUnsupported as error:
+        await update_inbound_if_processing(
+            session,
+            conversation.tenant_id,
+            conversation.id,
+            turn.id,
+            STATUS_FAILED,
+            "conversation executor compatibility failed: " + str(error),
+        )
+        return StaleTurnRecovery([], None)
+    if executor_id is None:
+        return StaleTurnRecovery([], None)
+    claimed = await session.execute(
+        update(AgentConversationTurn)
+        .where(
+            AgentConversationTurn.tenant_id == turn.tenant_id,
+            AgentConversationTurn.conversation_id == turn.conversation_id,
+            AgentConversationTurn.id == turn.id,
+            AgentConversationTurn.direction == DIRECTION_IN,
+            AgentConversationTurn.status == STATUS_PROCESSING,
+            (
+                (AgentConversationTurn.last_dispatch_at <= cutoff)
+                | (
+                    AgentConversationTurn.last_dispatch_at.is_(None)
+                    & (AgentConversationTurn.gmt_create <= cutoff)
+                )
+            ),
+        )
+        .values(
+            last_dispatch_at=func.now(),
+            dispatch_attempt=AgentConversationTurn.dispatch_attempt + 1,
+        )
+    )
+    if rowcount(claimed) != 1:
+        return StaleTurnRecovery([], None)
+    await _bind_executor(session, conversation.tenant_id, conversation, executor_id)
+    settled = await settle_pending_for_turn(session, turn.tenant_id, turn.id)
+    logger.info(
+        "conversation stale turn redeliver conversationId=%s turnId=%s executorId=%s",
+        conversation.id,
+        turn.id,
+        conversation.executor_id,
+    )
+    prompt = await _refresh_prompt(session, conversation.tenant_id, conversation, version_id)
+    return StaleTurnRecovery(
+        settled,
+        _Pending(
+            conversation,
+            turn.id,
+            turn.content,
+            turn.request_id,
+            prompt,
+            turn.dispatch_attempt + 1,
+            turn.source_context,
+        ),
+    )
 
 
 async def _finalize_cancel(

@@ -12,17 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.ai.models import AiSession
 from autowonder.config import get_settings
-from autowonder.conversations.elicitation import (
-    notify_canceled,
-    notify_expired,
-    settle_pending_for_turn,
-)
+from autowonder.conversations.elicitation import notify_canceled, notify_expired
 from autowonder.conversations.models import (
     AgentConversation,
     AgentConversationElicitation,
     AgentConversationTurn,
 )
-from autowonder.conversations.records import update_inbound_if_processing
+from autowonder.conversations.turns import recover_stale_turn, send_prepared_turn
 from autowonder.core.clock import SHANGHAI, now_local
 from autowonder.core.locks import release_lock, try_acquire_lock
 from autowonder.core.redis import redis_client
@@ -692,9 +688,15 @@ async def _recover_stale_turns() -> None:
             ).all()
         )
         settled: list[AgentConversationElicitation] = []
+        pending_sends = []
         for turn, conversation in rows:
+            if conversation.executor_id is None:
+                continue
             try:
-                settled.extend(await _recover_one(session, turn, conversation, cutoff))
+                async with session.begin_nested():
+                    reported, active = await _runtime_activity(conversation.executor_id)
+                    action = recovery_action(reported, active, turn.id, turn.dispatch_attempt)
+                    effect = await recover_stale_turn(session, turn, conversation, cutoff, action)
             except Exception:
                 logger.warning(
                     "conversation stale turn recovery failed conversationId=%s turnId=%s",
@@ -702,69 +704,14 @@ async def _recover_stale_turns() -> None:
                     turn.id,
                     exc_info=True,
                 )
+                continue
+            settled.extend(effect.settled)
+            if effect.pending is not None:
+                pending_sends.append(effect.pending)
         await session.commit()
         await notify_canceled(session, settled)
-
-
-async def _recover_one(
-    session: AsyncSession,
-    turn: AgentConversationTurn,
-    conversation: AgentConversation,
-    cutoff: datetime,
-) -> list[AgentConversationElicitation]:
-    if conversation.executor_id is None:
-        return []
-    reported, active = await _runtime_activity(conversation.executor_id)
-    action = recovery_action(reported, active, turn.id, turn.dispatch_attempt)
-    if action.startswith("skip"):
-        return []
-    if action == "fail":
-        error = (
-            "conversation runtime did not acknowledge after "
-            + str(turn.dispatch_attempt)
-            + " delivery attempts"
-        )
-        finalized = await update_inbound_if_processing(
-            session,
-            turn.tenant_id,
-            turn.conversation_id,
-            turn.id,
-            "FAILED",
-            error,
-        )
-        if finalized == 1:
-            return await settle_pending_for_turn(session, turn.tenant_id, turn.id)
-        return []
-    claimed = await session.execute(
-        update(AgentConversationTurn)
-        .where(
-            AgentConversationTurn.tenant_id == turn.tenant_id,
-            AgentConversationTurn.conversation_id == turn.conversation_id,
-            AgentConversationTurn.id == turn.id,
-            AgentConversationTurn.direction == "IN",
-            AgentConversationTurn.status == "PROCESSING",
-            (
-                (AgentConversationTurn.last_dispatch_at <= cutoff)
-                | (
-                    AgentConversationTurn.last_dispatch_at.is_(None)
-                    & (AgentConversationTurn.gmt_create <= cutoff)
-                )
-            ),
-        )
-        .values(
-            last_dispatch_at=func.now(),
-            dispatch_attempt=AgentConversationTurn.dispatch_attempt + 1,
-        )
-    )
-    if rowcount(claimed) == 1:
-        logger.info(
-            "conversation stale turn redeliver conversationId=%s turnId=%s executorId=%s",
-            turn.conversation_id,
-            turn.id,
-            conversation.executor_id,
-        )
-        return await settle_pending_for_turn(session, turn.tenant_id, turn.id)
-    return []
+        for pending in pending_sends:
+            await send_prepared_turn(session, pending)
 
 
 async def _runtime_activity(executor_id: int) -> tuple[bool, set[int]]:

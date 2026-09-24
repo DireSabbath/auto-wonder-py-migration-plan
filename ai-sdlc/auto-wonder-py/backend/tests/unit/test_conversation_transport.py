@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.agents.models import Agent
 from autowonder.conversations.models import AgentConversation
+from autowonder.conversations.runtime_content import runtime_content
 from autowonder.conversations.transport import (
     CapabilitySnapshot,
     cancel_frame,
@@ -108,6 +109,18 @@ def test_other_channels_fall_back_to_the_modifier() -> None:
     assert resolve_mcp_principal(conversation, edited) == 8
 
 
+def test_dingtalk_runtime_content_prefixes_the_sender() -> None:
+    """钉钉正文带上发送人。没有可用字段或坏 JSON 时仍用原文。"""
+    raw = '{"senderNick":"小陈","senderStaffId":"s1","conversationTitle":"群"}'
+    text = runtime_content("dingtalk", "你好", raw)
+    assert text is not None
+    assert text.startswith("DingTalk message context:\n- Sender nickname: 小陈\n")
+    assert "\nUser message:\n你好" in text
+    assert runtime_content("DINGTALK", "你好", "{}") == "你好"
+    assert runtime_content("WORKITEM_CLARIFICATION", "你好", raw) == "你好"
+    assert runtime_content("dingtalk", "你好", "{") == "你好"
+
+
 def test_empty_secret_refs_skip_the_master_key() -> None:
     """没有密文引用时返回空映射。"""
     assert resolve_mcp_secrets({}) == {}
@@ -157,6 +170,7 @@ async def test_send_turn_delivers_the_capability_frame(
         "sys",
         1,
         "req-1",
+        None,
     )
     assert captured == [
         '{"type":"CONVERSATION_TURN","executorId":9,"conversationId":4,"turnId":8,'
@@ -211,6 +225,7 @@ async def test_send_turn_requires_environment_protocol(
             None,
             1,
             None,
+            None,
         )
 
 
@@ -219,4 +234,4 @@ async def test_send_turn_requires_a_bound_executor() -> None:
     conversation = _conversation()
     conversation.executor_id = None
     with pytest.raises(IllegalArgumentError, match="conversation must have a bound executor"):
-        await send_turn(cast(AsyncSession, object()), conversation, 8, "hi", None, 1, None)
+        await send_turn(cast(AsyncSession, object()), conversation, 8, "hi", None, 1, None, None)

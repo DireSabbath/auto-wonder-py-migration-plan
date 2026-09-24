@@ -12,6 +12,7 @@ from autowonder.config import get_settings
 from autowonder.conversations.constants import PLATFORM_CHANNEL
 from autowonder.conversations.models import AgentConversation
 from autowonder.conversations.records import find_agent
+from autowonder.conversations.runtime_content import runtime_content
 from autowonder.core.errors import IllegalArgumentError
 from autowonder.dispatch.selector import ProtocolCompatibilityError
 from autowonder.environments.snapshot import resolve_snapshot
@@ -226,8 +227,10 @@ async def send_turn(
     system_prompt: str | None,
     dispatch_attempt: int | None,
     request_id: str | None,
+    source_context: str | None,
 ) -> None:
     """打包能力与环境变量后，把这一轮交给绑定的执行器。"""
+    delivered = runtime_content(conversation.channel, content, source_context)
     executor_id = _bound_executor(conversation)
     logger.info(
         "conversation turn dispatch conversationId=%s turnId=%s executorId=%s attempt=%s",
@@ -248,7 +251,7 @@ async def send_turn(
             turn_id=turn_id,
             agent_id=conversation.agent_id,
             dispatch_attempt=dispatch_attempt,
-            content=content,
+            content=delivered,
             request_id=_request_id(request_id),
             cli_session_ref=_text(conversation.cli_session_ref),
             system_prompt=_text(system_prompt),
