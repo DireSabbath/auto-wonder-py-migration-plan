@@ -31,9 +31,9 @@ FULL_CYCLE_ROLES = frozenset(
 _TERMINAL = {"FAILED", "TIMEOUT", "CANCELED"}
 
 
-def squad_flow(base_url: str) -> dict[str, object]:
-    """走完七角色小队到交真人，并打开工单时间线。"""
-    return asyncio.run(_run(base_url.rstrip("/")))
+def squad_flow(base_url: str, include_page: bool = True) -> dict[str, object]:
+    """走完七角色小队到交真人。页面时间线只在单栈验收时打开。"""
+    return asyncio.run(_run(base_url.rstrip("/"), include_page))
 
 
 def role_codes(agents: object) -> set[str]:
@@ -49,8 +49,8 @@ def role_codes(agents: object) -> set[str]:
     return found
 
 
-async def _run(base_url: str) -> dict[str, object]:
-    chain = _Chain(base_url)
+async def _run(base_url: str, include_page: bool) -> dict[str, object]:
+    chain = _Chain(base_url, include_page)
     try:
         await chain.walk()
     finally:
@@ -115,8 +115,9 @@ class _Check:
 
 
 class _Chain:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, include_page: bool) -> None:
         self.base_url = base_url
+        self.include_page = include_page
         self.client = httpx.AsyncClient(timeout=60.0)
         self.checks: list[_Check] = []
         self.facts: dict[str, object] = {}
@@ -188,7 +189,8 @@ class _Chain:
         await self._timeline(workitem_id)
         if self.stopped != "":
             return
-        await self._see_page(workitem_id)
+        if self.include_page:
+            await self._see_page(workitem_id)
 
     async def _register(self, username: str, password: str) -> None:
         await self._api(
@@ -477,10 +479,9 @@ class _Chain:
             None,
         )
         text = "\n".join(str(row.get("content")) for row in _rows(self.last_document))
-        self._check(
-            "unified_timeline",
-            "工单已创建" in text and "交付负责人已变更" in text,
-        )
+        phrases = "工单已创建" in text and "交付负责人已变更" in text
+        self.facts["unifiedPhrases"] = phrases
+        self._check("unified_timeline", phrases)
 
     async def _see_page(self, workitem_id: str) -> None:
         state = {

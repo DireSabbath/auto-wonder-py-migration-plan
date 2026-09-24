@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.squad_flow import squad_flow
 
         verdict = squad_flow(args.base_url)
+    elif args.command == "squad-dual":
+        from verify.squad_dual import squad_dual
+
+        verdict = squad_dual(args.base_url, args.java_url)
     elif args.command == "mcp":
         from verify.mcp_flow import mcp_flow
 
