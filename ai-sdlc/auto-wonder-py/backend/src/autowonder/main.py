@@ -154,6 +154,15 @@ def create_app() -> FastAPI:
     return app
 
 
+def serving_app() -> FastAPI:
+    """生产应用：在 ``create_app`` 上挂定时任务生命周期。测试用的应用工厂不启动调度器。"""
+    from autowonder.jobs.scheduler import scheduler_lifespan
+
+    app = create_app()
+    app.router.lifespan_context = scheduler_lifespan
+    return app
+
+
 def serve() -> None:
     """生产入口：先做一次性管理员迁移，再监听配置中的 HTTP 端口。"""
     import asyncio
@@ -170,7 +179,7 @@ def serve() -> None:
     asyncio.run(_boot())
     settings = get_settings()
     uvicorn.run(
-        "autowonder.main:create_app",
+        serving_app,
         factory=True,
         host="0.0.0.0",
         port=settings.http_port,

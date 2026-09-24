@@ -1,0 +1,335 @@
+"""启动一条已经入队的定时运行，并创建它的根派发。"""
+
+import logging
+
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from autowonder.core.clock import now_local
+from autowonder.core.errors import BizError, ErrorCode
+from autowonder.db.rows import rowcount
+from autowonder.db.session import SessionLocal
+from autowonder.dispatch.models import Dispatch
+from autowonder.scheduledtasks.models import ScheduledTaskRun
+from autowonder.users.models import User
+from autowonder.workspaces.models import OrgMember
+
+logger = logging.getLogger(__name__)
+
+SNAPSHOT_SCHEMA = "autowonder.scheduledTaskExecutionSnapshot.v1"
+_TERMINAL = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELED", "SKIPPED"})
+_STARTABLE = frozenset({"QUEUED", "STARTING", "WAITING_EXECUTOR"})
+
+
+async def start_run(workspace_id: int, run_id: int, actor_id: int) -> None:
+    """把 QUEUED、STARTING 或等待执行器的运行推进到等待执行器，并保证根派发存在。"""
+    async with SessionLocal() as session:
+        run = await _load(session, workspace_id, run_id)
+        if run is None or run.status not in _STARTABLE:
+            return
+        try:
+            if run.status == "WAITING_EXECUTOR":
+                moved = await _transition(session, run, "WAITING_EXECUTOR", "QUEUED", actor_id)
+                if not moved:
+                    return
+                run = await _load(session, workspace_id, run_id)
+                if run is None or run.status != "QUEUED":
+                    return
+            if not await _owner_active(session, run):
+                await _fail(session, run, actor_id, "OWNER_INACTIVE")
+                return
+            snapshot = _snapshot(run)
+            version_id = _frozen_version(snapshot, run.initial_agent_id)
+            sdlc = snapshot.get("sdlc")
+            sdlc_id = run.sdlc_id
+            step_id = run.current_step_id
+            if not isinstance(sdlc, dict):
+                sdlc_id = None
+                step_id = None
+            started = await _initialize(session, run, sdlc_id, step_id, actor_id)
+            if not started:
+                return
+            run = await _load(session, workspace_id, run_id)
+            if run is None or run.status != "STARTING":
+                raise BizError(
+                    ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+                    "Run start state was not persisted",
+                )
+            dispatch = await _enqueue(session, run, step_id, actor_id)
+            await _pin_version(session, dispatch, version_id)
+            moved = await _transition(session, run, "STARTING", "WAITING_EXECUTOR", actor_id)
+            if not moved:
+                raise BizError(
+                    ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+                    "Run waiting-executor transition was lost",
+                )
+            await session.commit()
+        except BizError as error:
+            await session.rollback()
+            if error.code == ErrorCode.SCHEDULED_TASK_INVALID_STATE.code:
+                await _fail_detached(
+                    workspace_id,
+                    run_id,
+                    actor_id,
+                    error.code + ": " + str(error),
+                )
+                return
+            raise
+        except Exception as error:
+            await session.rollback()
+            message = ErrorCode.SCHEDULED_TASK_INVALID_STATE.code + ": " + str(error)
+            await _fail_detached(workspace_id, run_id, actor_id, message)
+
+
+async def _fail_detached(workspace_id: int, run_id: int, actor_id: int, error: str) -> None:
+    async with SessionLocal() as session:
+        run = await _load(session, workspace_id, run_id)
+        if run is None or run.status in _TERMINAL:
+            return
+        await _fail(session, run, actor_id, error)
+
+
+async def _load(session: AsyncSession, workspace_id: int, run_id: int) -> ScheduledTaskRun | None:
+    run = await session.get(ScheduledTaskRun, run_id)
+    if run is None or run.workspace_id != workspace_id:
+        return None
+    return run
+
+
+async def _owner_active(session: AsyncSession, run: ScheduledTaskRun) -> bool:
+    user = await session.get(User, run.owner_id)
+    if user is None or user.status != 0:
+        return False
+    member = await session.scalar(
+        select(OrgMember)
+        .where(
+            OrgMember.tenant_id == run.workspace_id,
+            OrgMember.user_id == run.owner_id,
+            OrgMember.is_deleted == 0,
+        )
+        .limit(1)
+    )
+    return member is not None and member.status == 0
+
+
+def _snapshot(run: ScheduledTaskRun) -> dict[str, object]:
+    raw = run.execution_snapshot_json
+    if not isinstance(raw, dict) or raw.get("schemaVersion") != SNAPSHOT_SCHEMA:
+        raise BizError(
+            ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+            "execution snapshot schema is invalid",
+        )
+    task = raw.get("task")
+    assignment = raw.get("assignment")
+    policies = raw.get("policies")
+    name = task.get("name") if isinstance(task, dict) else None
+    instruction = task.get("instructionMd") if isinstance(task, dict) else None
+    session_mode = policies.get("sessionMode") if isinstance(policies, dict) else None
+    if (
+        not isinstance(task, dict)
+        or task.get("id") != run.scheduled_task_id
+        or not isinstance(name, str)
+        or name.strip() == ""
+        or not isinstance(instruction, str)
+        or instruction.strip() == ""
+        or not isinstance(assignment, dict)
+        or assignment.get("squadId") != run.squad_id
+        or assignment.get("initialAgentId") != run.initial_agent_id
+        or not isinstance(policies, dict)
+        or not isinstance(session_mode, str)
+        or session_mode.strip() == ""
+        or not isinstance(raw.get("requirementDocuments"), list)
+        or not isinstance(raw.get("agentContexts"), list)
+    ):
+        raise BizError(ErrorCode.SCHEDULED_TASK_INVALID_STATE, "execution snapshot is incomplete")
+    return raw
+
+
+def _frozen_version(snapshot: dict[str, object], agent_id: int) -> int:
+    if agent_id <= 0:
+        raise BizError(ErrorCode.SCHEDULED_TASK_INVALID_STATE, "initial agent is invalid")
+    contexts = snapshot.get("agentContexts")
+    matched: dict[str, object] | None = None
+    if isinstance(contexts, list):
+        for item in contexts:
+            if isinstance(item, dict) and item.get("agentId") == agent_id:
+                if matched is not None:
+                    raise BizError(
+                        ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+                        "agent context is duplicated",
+                    )
+                matched = item
+    version_id = None if matched is None else matched.get("agentVersionId")
+    if not isinstance(version_id, int) or isinstance(version_id, bool) or version_id <= 0:
+        raise BizError(ErrorCode.SCHEDULED_TASK_INVALID_STATE, "frozen agent context is missing")
+    return version_id
+
+
+async def _initialize(
+    session: AsyncSession,
+    run: ScheduledTaskRun,
+    sdlc_id: int | None,
+    step_id: int | None,
+    actor_id: int,
+) -> bool:
+    started_at = run.started_at if run.started_at is not None else now_local()
+    result = await session.execute(
+        update(ScheduledTaskRun)
+        .where(
+            ScheduledTaskRun.workspace_id == run.workspace_id,
+            ScheduledTaskRun.id == run.id,
+            ScheduledTaskRun.status == run.status,
+            ScheduledTaskRun.status.in_(("QUEUED", "STARTING")),
+            ScheduledTaskRun.version == run.version,
+        )
+        .values(
+            status="STARTING",
+            started_at=started_at,
+            sdlc_id=sdlc_id,
+            current_agent_id=run.initial_agent_id,
+            current_step_id=step_id,
+            modifier_id=actor_id,
+            version=ScheduledTaskRun.version + 1,
+        )
+    )
+    return rowcount(result) == 1
+
+
+async def _transition(
+    session: AsyncSession,
+    run: ScheduledTaskRun,
+    expected: str,
+    target: str,
+    actor_id: int,
+) -> bool:
+    result = await session.execute(
+        update(ScheduledTaskRun)
+        .where(
+            ScheduledTaskRun.workspace_id == run.workspace_id,
+            ScheduledTaskRun.id == run.id,
+            ScheduledTaskRun.status == expected,
+            ScheduledTaskRun.version == run.version,
+        )
+        .values(
+            status=target,
+            modifier_id=actor_id,
+            version=ScheduledTaskRun.version + 1,
+        )
+    )
+    if rowcount(result) != 1:
+        return False
+    run.status = target
+    run.version = run.version + 1
+    return True
+
+
+async def _enqueue(
+    session: AsyncSession,
+    run: ScheduledTaskRun,
+    step_id: int | None,
+    actor_id: int,
+) -> Dispatch:
+    step_token = "root" if step_id is None else str(step_id)
+    idempotency_key = "SCHEDULED_TASK_RUN:" + str(run.id) + ":" + step_token + ":1"
+    existing = await session.scalar(
+        select(Dispatch)
+        .where(
+            Dispatch.tenant_id == run.workspace_id,
+            Dispatch.idempotency_key == idempotency_key,
+            Dispatch.is_deleted == 0,
+        )
+        .limit(1)
+    )
+    if existing is not None:
+        return existing
+    dispatch = Dispatch(
+        tenant_id=run.workspace_id,
+        source_type="SCHEDULED_TASK_RUN",
+        workitem_id=run.id,
+        sdlc_step_id=step_id,
+        agent_id=run.initial_agent_id,
+        status="PENDING",
+        attempt=1,
+        idempotency_key=idempotency_key,
+        creator_id=actor_id,
+        modifier_id=actor_id,
+        version=0,
+        is_deleted=0,
+        debug_log_enabled=0,
+    )
+    try:
+        async with session.begin_nested():
+            session.add(dispatch)
+            await session.flush()
+    except IntegrityError:
+        winner = await session.scalar(
+            select(Dispatch)
+            .where(
+                Dispatch.tenant_id == run.workspace_id,
+                Dispatch.idempotency_key == idempotency_key,
+            )
+            .limit(1)
+        )
+        if winner is None:
+            raise
+        return winner
+    return dispatch
+
+
+async def _pin_version(session: AsyncSession, dispatch: Dispatch, agent_version_id: int) -> None:
+    if dispatch.agent_version_id == agent_version_id:
+        return
+    if dispatch.agent_version_id is not None:
+        raise BizError(
+            ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+            "scheduled dispatch cannot be pinned to its frozen agent version",
+        )
+    result = await session.execute(
+        update(Dispatch)
+        .where(
+            Dispatch.id == dispatch.id,
+            Dispatch.tenant_id == dispatch.tenant_id,
+            Dispatch.source_type == "SCHEDULED_TASK_RUN",
+            Dispatch.agent_id == dispatch.agent_id,
+            Dispatch.agent_version_id.is_(None),
+            Dispatch.is_deleted == 0,
+        )
+        .values(agent_version_id=agent_version_id, modifier_id=0, version=Dispatch.version + 1)
+    )
+    if rowcount(result) != 1:
+        raise BizError(
+            ErrorCode.SCHEDULED_TASK_INVALID_STATE,
+            "scheduled dispatch cannot be pinned to its frozen agent version",
+        )
+    dispatch.agent_version_id = agent_version_id
+
+
+async def _fail(session: AsyncSession, run: ScheduledTaskRun, actor_id: int, error: str) -> None:
+    current = await _load(session, run.workspace_id, run.id)
+    if current is None or current.status in _TERMINAL or current.version is None:
+        return
+    await session.execute(
+        update(ScheduledTaskRun)
+        .where(
+            ScheduledTaskRun.workspace_id == current.workspace_id,
+            ScheduledTaskRun.id == current.id,
+            ScheduledTaskRun.status == current.status,
+            ScheduledTaskRun.version == current.version,
+            ScheduledTaskRun.status.not_in(_TERMINAL),
+        )
+        .values(
+            status="FAILED",
+            error=error[:1024],
+            finished_at=now_local(),
+            modifier_id=actor_id,
+            version=ScheduledTaskRun.version + 1,
+        )
+    )
+    await session.commit()
+    logger.info(
+        "scheduled run failed workspaceId=%s runId=%s error=%s",
+        run.workspace_id,
+        run.id,
+        error,
+    )

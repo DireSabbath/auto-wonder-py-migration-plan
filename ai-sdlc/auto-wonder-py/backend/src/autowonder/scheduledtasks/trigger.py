@@ -1,7 +1,7 @@
 """创建定时任务运行。手动触发要求任务处于 ACTIVE，并冻结可执行小队成员。"""
 
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -45,13 +45,13 @@ async def fire_manual(
     if task is None or task.workspace_id != workspace_id:
         raise BizError(ErrorCode.SCHEDULED_TASK_NOT_FOUND)
     _require_runnable(task, False)
-    decided = await _lock_for_overlap(session, task)
+    decided = await _lock_for_overlap(session, task, False)
     skip_reason = None
     if await _has_active(session, decided) and (
         decided.overlap_policy == "SKIP" or decided.session_mode == "CONTINUOUS"
     ):
         skip_reason = "OVERLAP"
-    now = datetime.now(datetime.UTC).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     trigger_key = manual_key(task.id, request_id)
     run = await _base_run(session, decided, now, "MANUAL", trigger_key, skip_reason)
     try:
@@ -73,7 +73,11 @@ async def fire_manual(
     return run
 
 
-async def _lock_for_overlap(session: AsyncSession, task: ScheduledTask) -> ScheduledTask:
+async def _lock_for_overlap(
+    session: AsyncSession,
+    task: ScheduledTask,
+    allow_exhausted: bool,
+) -> ScheduledTask:
     if task.overlap_policy != "SKIP" and task.session_mode != "CONTINUOUS":
         return task
     locked = await session.scalar(
@@ -88,7 +92,7 @@ async def _lock_for_overlap(session: AsyncSession, task: ScheduledTask) -> Sched
     )
     if locked is None or locked.workspace_id != task.workspace_id:
         raise BizError(ErrorCode.SCHEDULED_TASK_NOT_FOUND)
-    _require_runnable(locked, False)
+    _require_runnable(locked, allow_exhausted)
     return locked
 
 
@@ -278,3 +282,98 @@ def _as_int(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def scheduled_trigger_key(task_id: int, scheduled_at: datetime) -> str:
+    """计划触发的幂等键。时间格式与 Java ``Instant.toString()`` 一致。"""
+    return "task:" + str(task_id) + ":scheduled:" + java_instant(scheduled_at)
+
+
+def java_instant(value: datetime) -> str:
+    """UTC 瞬间写成带 ``Z`` 的 ISO-8601，小数末尾的 0 去掉。"""
+    moment = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    moment = moment.astimezone(UTC)
+    text = moment.strftime("%Y-%m-%dT%H:%M:%S")
+    if moment.microsecond:
+        fraction = f"{moment.microsecond:06d}".rstrip("0")
+        text = text + "." + fraction
+    return text + "Z"
+
+
+async def fire_scheduled(
+    session: AsyncSession,
+    task: ScheduledTask,
+    scheduled_at: datetime,
+) -> ScheduledTaskRun:
+    """创建一次到期的计划运行。"""
+    return await fire_occurrence(session, task, scheduled_at, "SCHEDULED", None, False)
+
+
+async def fire_misfire(
+    session: AsyncSession,
+    task: ScheduledTask,
+    scheduled_at: datetime,
+    skip_reason: str | None,
+    bypass_overlap: bool,
+) -> ScheduledTaskRun:
+    """补触发。跳过原因只接受空、策略跳过或超过启动期限。"""
+    if skip_reason is not None and skip_reason not in {"MISFIRE_POLICY", "START_DEADLINE"}:
+        raise ValueError("unsupported misfire skip reason: " + skip_reason)
+    return await fire_occurrence(
+        session,
+        task,
+        scheduled_at,
+        "MISFIRE",
+        skip_reason,
+        bypass_overlap,
+    )
+
+
+async def fire_occurrence(
+    session: AsyncSession,
+    task: ScheduledTask,
+    scheduled_at: datetime,
+    trigger_type: str,
+    skip_reason: str | None,
+    bypass_overlap: bool,
+) -> ScheduledTaskRun:
+    """按触发键插入运行。重复键取回已有行。"""
+    from autowonder.scheduledtasks.capability import require_scheduled_capability
+
+    require_scheduled_capability()
+    allow_exhausted = trigger_type != "MANUAL"
+    decided = task
+    if (
+        not bypass_overlap
+        and skip_reason is None
+        and (task.overlap_policy == "SKIP" or task.session_mode == "CONTINUOUS")
+    ):
+        decided = await _lock_for_overlap(session, task, allow_exhausted)
+    _require_runnable(decided, allow_exhausted)
+    resolved_skip = skip_reason
+    if (
+        not bypass_overlap
+        and resolved_skip is None
+        and await _has_active(session, decided)
+        and (decided.overlap_policy == "SKIP" or decided.session_mode == "CONTINUOUS")
+    ):
+        resolved_skip = "OVERLAP"
+    trigger_key = scheduled_trigger_key(task.id, scheduled_at)
+    run = await _base_run(session, decided, scheduled_at, trigger_type, trigger_key, resolved_skip)
+    try:
+        async with session.begin_nested():
+            session.add(run)
+            await session.flush()
+    except IntegrityError:
+        recovered = await session.scalar(
+            select(ScheduledTaskRun)
+            .where(
+                ScheduledTaskRun.workspace_id == task.workspace_id,
+                ScheduledTaskRun.trigger_key == trigger_key,
+            )
+            .limit(1)
+        )
+        if recovered is None:
+            raise
+        return recovered
+    return run

@@ -195,6 +195,11 @@ async def _insert_task(
     return task
 
 
+async def deliver_task(session: AsyncSession, task: ExecutorUpdateTask) -> bool:
+    """把升级指令发给在线执行器，并写下发时间。"""
+    return await _deliver(session, task)
+
+
 async def _deliver(session: AsyncSession, task: ExecutorUpdateTask) -> bool:
     if not await executor_online(task.executor_id):
         return False
