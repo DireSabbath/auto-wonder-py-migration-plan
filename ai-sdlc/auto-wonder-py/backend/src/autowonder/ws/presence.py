@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from enum import Enum
-from typing import cast
+from typing import Any, cast
 
 from autowonder.core.redis import redis_client
 from autowonder.ws.frames import BROADCAST_CHANNEL
@@ -342,6 +342,53 @@ class PresenceManager:
             return False
         return await self.current_dispatch_snapshot(executor_id) is not None
 
+    async def is_executor_available(self, executor_id: int) -> bool:
+        """在线且未删除、不在故障转移冷却中，才能接受新派发。"""
+        client = redis_client()
+        try:
+            if await client.exists(deleted_key(executor_id)):
+                return False
+            if not await self.is_executor_online(executor_id):
+                return False
+            cooldown = "exec:provider-cooldown:" + str(executor_id)
+            if not await client.exists(cooldown):
+                return True
+            marker = _redis_text(await client.get(cooldown))
+            if marker is None or not marker.startswith("failover:"):
+                await client.delete(cooldown)
+                return True
+            return False
+        except Exception:
+            return False
+
+    async def current_protocol_error(self, executor_id: int) -> str | None:
+        """当前会话上报的协议错误。没有会话时没有错误。"""
+        session_id = await self.current_session_id(executor_id)
+        if session_id is None:
+            return None
+        return _redis_text(
+            await redis_client().get(_protocol_error_key(executor_id, session_id))
+        )
+
+    async def current_agent_protocol_error(self, agent_id: int) -> str | None:
+        """该数字员工任一在线成员上的协议错误。"""
+        raw = await cast(
+            Awaitable[set[Any]],
+            redis_client().smembers("agent:execs:" + str(agent_id)),
+        )
+        for member in raw:
+            text = _redis_text(member)
+            if text is None:
+                continue
+            try:
+                executor_id = int(text)
+            except ValueError:
+                continue
+            error = await self.current_protocol_error(executor_id)
+            if error is not None and error.strip() != "":
+                return error
+        return None
+
 
 def _normalize_features(protocol_features: list[str] | None) -> list[str]:
     if protocol_features is None:
@@ -365,6 +412,14 @@ def _trim_limit(value: str | None, limit: int) -> str | None:
     if len(trimmed) > limit:
         return trimmed[:limit]
     return trimmed
+
+
+def _redis_text(raw: object) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        return raw.decode()
+    return str(raw)
 
 
 def _protocol_error_key(executor_id: int, session_id: str) -> str:
