@@ -44,6 +44,7 @@ from autowonder.platform.admin_router import router as platform_admin_router
 from autowonder.platform.router import router as branding_router
 from autowonder.repos.router import router as repo_router
 from autowonder.scheduledtasks.router import router as scheduled_capability_router
+from autowonder.scheduledtasks.router import task_router as scheduled_task_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.settings.router import router as setting_router
 from autowonder.skills.router import router as skill_router
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(identity_router)
     app.include_router(channel_router)
     app.include_router(scheduled_capability_router)
+    app.include_router(scheduled_task_router)
     app.include_router(agent_router)
     app.include_router(agent_status_router)
     app.include_router(intelligence_router)
