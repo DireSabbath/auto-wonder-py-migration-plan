@@ -307,9 +307,10 @@ async def edit_config(
         user_id,
     )
     _require_updated(updated)
+    draft_id = draft.id
     await session.commit()
     session.expire_all()
-    return await _to_version_view(session, await _require_version(session, draft.id))
+    return await _to_version_view(session, await _require_version(session, draft_id))
 
 
 async def update_agent(

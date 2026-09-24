@@ -104,7 +104,10 @@ async def resolve_snapshot(
     agent_version_id: int,
     decrypt: Decrypt | None = None,
 ) -> Mapping[str, str]:
-    """读取该版本的连接结果并解析。省略解密函数时使用配置里的主密钥。"""
+    """读取该版本的连接结果并解析。
+
+    没有引用时返回空快照，不读取主密钥。有引用且省略解密函数时使用配置里的主密钥。
+    """
     result = await session.execute(resolution_snapshot_statement(tenant_id, agent_version_id))
     rows = [
         SnapshotRow(
@@ -118,6 +121,8 @@ async def resolve_snapshot(
         )
         for item in result.all()
     ]
+    if len(rows) == 0:
+        return MappingProxyType({})
     cipher = decrypt
     if cipher is None:
         cipher = _crypto().decrypt

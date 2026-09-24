@@ -310,6 +310,9 @@ class _Chain:
             {"sdlcId": int(sdlc_id), "roleName": "开发", "roleCode": "dev"},
         )
         self._check("agent_config", 200, "true", "draft version carries the SDLC")
+        if _json_get(self.last_document, "success") != "true":
+            self._stop("agent config failed")
+            return ""
         await self._api("POST", f"/api/agents/{agent_id}/submit", self._workspace_token, None)
         self._check("agent_submit", 200, "true", "submit the draft")
         await self._api(
