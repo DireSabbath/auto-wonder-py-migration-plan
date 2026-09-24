@@ -1,4 +1,4 @@
-"""验证命令：smoke、authchain、logscan、dispatch-e2e、pages、squad-flow、mcp、cli-scenes、parity。"""
+"""验收命令入口。"""
 
 import argparse
 import json
@@ -63,6 +63,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.cli_scenes import cli_scenes
 
         verdict = cli_scenes(args.base_url)
+    elif args.command == "outbox":
+        from verify.outbox_flow import outbox_flow
+
+        verdict = outbox_flow(args.base_url)
     elif args.command == "parity":
         from verify.parity import parity
 
