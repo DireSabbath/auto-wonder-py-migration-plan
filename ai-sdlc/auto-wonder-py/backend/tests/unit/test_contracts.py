@@ -164,6 +164,12 @@ def _assert_binding_order(client: TestClient, headers: dict[str, str]) -> None:
     missing_body = client.post("/api/agents", headers=headers)
     assert missing_body.status_code == 400
     assert missing_body.json()["code"] == "10001"
+    category = client.post("/api/categories", headers=headers)
+    assert category.status_code == 400
+    assert category.json()["code"] == "10001"
+    proposal = client.post("/api/evolution/proposals", headers=headers)
+    assert proposal.status_code == 400
+    assert proposal.json()["code"] == "10001"
     missing_query = client.get("/api/debug-logs", headers=headers)
     assert missing_query.status_code == 200
     assert missing_query.json()["code"] == "10000"

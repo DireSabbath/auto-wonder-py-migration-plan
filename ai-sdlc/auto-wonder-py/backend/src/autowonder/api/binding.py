@@ -3,8 +3,10 @@
 Spring 先解析路径、查询、请求头和正文。绑定失败时不会进入
 ``WorkspaceAccessAspect``，因此缺正文是 400，缺查询落到 10000。
 绑定成功后，依赖里的工作空间检查才返回 11001。
+直接读 ``Request`` 的写接口同样先要求 JSON 对象，飞书回调和 daemon 除外。
 """
 
+import json
 from typing import Any
 
 from fastapi import Request, WebSocket
@@ -94,4 +96,46 @@ async def _binding_errors(
             embed_body_fields=embed_body_fields,
         )
         errors.extend(body_errors)
+    if not errors:
+        errors.extend(await _raw_json_body_errors(request, dependant))
     return errors
+
+
+def _missing_body() -> dict[str, object]:
+    return {"type": "missing", "loc": ("body",), "msg": "Field required", "input": None}
+
+
+def _invalid_json(error: json.JSONDecodeError) -> dict[str, object]:
+    return {
+        "type": "json_invalid",
+        "loc": ("body", error.pos),
+        "msg": "JSON decode error",
+        "input": {},
+        "ctx": {"error": error.msg},
+    }
+
+
+async def _raw_json_body_errors(
+    request: Request | WebSocket,
+    dependant: Dependant,
+) -> list[dict[str, object]]:
+    """没有声明正文模型、但方法自己读 JSON 时，空正文和坏 JSON 先于工作空间检查。"""
+    if dependant.body_params or dependant.request_param_name is None:
+        return []
+    if not isinstance(request, Request):
+        return []
+    if request.method not in {"POST", "PUT", "PATCH"}:
+        return []
+    path = request.url.path
+    if path.startswith("/api/daemon/") or path.startswith("/api/integrations/feishu/callback"):
+        return []
+    raw = await request.body()
+    if raw == b"":
+        return [_missing_body()]
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        return [_invalid_json(error)]
+    if not isinstance(parsed, dict):
+        return [_missing_body()]
+    return []

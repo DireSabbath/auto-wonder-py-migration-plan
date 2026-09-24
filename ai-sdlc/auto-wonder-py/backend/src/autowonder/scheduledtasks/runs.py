@@ -525,22 +525,22 @@ async def run_comments(runId: int, session: AsyncSession = Depends(get_session))
 )
 async def add_run_comment(
     runId: int,
-    body: AddCommentRequest | None = None,
+    body: AddCommentRequest,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """写真人评论，并通知被 @ 的人。"""
-    agents = [] if body is None or body.target_agent_ids is None else [
-        item for item in body.target_agent_ids if isinstance(item, int)
-    ]
-    humans = [] if body is None or body.target_human_ids is None else [
-        item for item in body.target_human_ids if isinstance(item, int)
-    ]
+    """写真人评论，并通知被 @ 的人。缺少正文时是参数不合法。"""
+    agents: list[int] = []
+    if body.target_agent_ids is not None:
+        agents = [item for item in body.target_agent_ids if isinstance(item, int)]
+    humans: list[int] = []
+    if body.target_human_ids is not None:
+        humans = [item for item in body.target_human_ids if isinstance(item, int)]
     view, notices = await add_human_comment(
         session,
         _workspace_id(),
         runId,
         _user_id(),
-        None if body is None else body.content_md,
+        body.content_md,
         agents,
         humans,
     )
