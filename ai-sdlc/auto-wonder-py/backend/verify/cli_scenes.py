@@ -17,6 +17,8 @@ import httpx
 from autowonder.ai.worker import QUEUE, execute_session
 from autowonder.core.redis import redis_client
 
+# keyBusiness、upstreams、downstreams 在库里是 JSON 列。Java 按字符串原样插入，
+# 所以这里写成数组，Fastjson getString 得到的文本本身仍是合法 JSON。
 _FAKE_CLI = r"""#!/usr/bin/env python3
 import json
 import sys
@@ -27,9 +29,9 @@ if "-p" in sys.argv:
 if "请扫描本地仓库" in prompt:
     body = {
         "purpose": "demo",
-        "keyBusiness": "locks",
-        "upstreams": "api",
-        "downstreams": "db",
+        "keyBusiness": ["locks"],
+        "upstreams": ["api"],
+        "downstreams": ["db"],
         "summaryMd": "scanned",
     }
 elif "SDLC workflow" in prompt:
