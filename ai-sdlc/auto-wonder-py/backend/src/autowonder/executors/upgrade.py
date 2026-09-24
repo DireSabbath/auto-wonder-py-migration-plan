@@ -195,6 +195,127 @@ async def _insert_task(
     return task
 
 
+def upgrade_phase_target(phase: object) -> str | None:
+    """客户端阶段对应推迟截止时间、推进状态、成功或失败。未知阶段忽略。"""
+    if phase == "accepted":
+        return "postpone"
+    if phase == "draining":
+        return "DRAINING"
+    if phase in {"downloading", "applying"}:
+        return "UPDATING"
+    if phase == "success":
+        return "SUCCESS"
+    if phase == "failed":
+        return "FAILED"
+    return None
+
+
+async def on_upgrade_result(
+    session: AsyncSession,
+    executor_id: int,
+    frame: dict[str, object],
+) -> None:
+    """按 requestId 推进仍在进行的升级。阶段上报都会把截止时间再推迟 30 分钟。"""
+    request_id = frame.get("requestId")
+    if not isinstance(request_id, str) or request_id.strip() == "":
+        return
+    target = upgrade_phase_target(frame.get("phase"))
+    if target is None:
+        return
+    task = await session.scalar(
+        select(ExecutorUpdateTask)
+        .where(
+            ExecutorUpdateTask.request_id == request_id.strip(),
+            ExecutorUpdateTask.is_deleted == 0,
+        )
+        .limit(1)
+    )
+    if task is None or task.executor_id != executor_id or task.status not in _ACTIVE:
+        return
+    if target == "postpone":
+        await _postpone_attempt(session, task)
+        return
+    if target == "FAILED":
+        await _fail_attempt(session, task, _upgrade_error(frame.get("error")), False)
+        return
+    if target == "SUCCESS":
+        version = frame.get("currentVersion")
+        if isinstance(version, str) and version.strip() != "":
+            from autowonder.ws.presence import presence_manager
+
+            await presence_manager.record_version(task.executor_id, version.strip())
+        await session.execute(
+            update(ExecutorUpdateTask)
+            .where(
+                ExecutorUpdateTask.id == task.id,
+                ExecutorUpdateTask.is_deleted == 0,
+                ExecutorUpdateTask.status.in_(_ACTIVE),
+            )
+            .values(status="SUCCESS", completed_at=now_local())
+        )
+        await session.commit()
+        return
+    await session.execute(
+        update(ExecutorUpdateTask)
+        .where(
+            ExecutorUpdateTask.id == task.id,
+            ExecutorUpdateTask.is_deleted == 0,
+            ExecutorUpdateTask.status.in_(_ACTIVE),
+        )
+        .values(status=target)
+    )
+    await _postpone_attempt(session, task)
+
+
+def _upgrade_error(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value[:1000]
+
+
+async def _postpone_attempt(session: AsyncSession, task: ExecutorUpdateTask) -> None:
+    deadline = now_local() + timedelta(seconds=_ATTEMPT_TIMEOUT_SECONDS)
+    await session.execute(
+        update(ExecutorUpdateTask)
+        .where(ExecutorUpdateTask.id == task.id, ExecutorUpdateTask.is_deleted == 0)
+        .values(next_attempt_at=deadline)
+    )
+    await session.commit()
+
+
+async def _fail_attempt(
+    session: AsyncSession,
+    task: ExecutorUpdateTask,
+    reason: str,
+    terminal: bool,
+) -> None:
+    attempts = task.attempt_count + 1
+    budget = _MAX_ATTEMPTS if task.max_attempts is None else task.max_attempts
+    exhausted = terminal or attempts >= budget
+    nxt = None
+    if not exhausted:
+        delay = (60, 300)[min(attempts - 1, 1)]
+        nxt = now_local() + timedelta(seconds=delay)
+    status = "FAILED" if exhausted else "PENDING"
+    await session.execute(
+        update(ExecutorUpdateTask)
+        .where(
+            ExecutorUpdateTask.id == task.id,
+            ExecutorUpdateTask.is_deleted == 0,
+            ExecutorUpdateTask.status.in_(_ACTIVE),
+        )
+        .values(
+            status=status,
+            attempt_count=ExecutorUpdateTask.attempt_count + 1,
+            last_error=reason,
+            next_attempt_at=nxt,
+            delivered_at=None,
+            completed_at=now_local() if status == "FAILED" else None,
+        )
+    )
+    await session.commit()
+
+
 async def deliver_task(session: AsyncSession, task: ExecutorUpdateTask) -> bool:
     """把升级指令发给在线执行器，并写下发时间。"""
     return await _deliver(session, task)

@@ -1,8 +1,7 @@
 """入站帧路由，对齐 ``InboundFrameRouter``。
 
 类型化帧会丢掉 Bean 上没有的键，所以这里按原始 JSON 分发。
-调度状态只在 Java 允许的来源集合里前进。SDLC 驱动、交接、引导、
-会话和升级回执还没有接到对应服务。
+调度状态只在 Java 允许的来源集合里前进。交接和引导回执还没有接到对应服务。
 """
 
 import json
@@ -78,16 +77,7 @@ EXECUTOR_FAILURE_CATEGORIES = frozenset(
 SYSTEM_USER_ID = 0
 MAX_ERROR_CHARS = 512
 _UNWIRED = (
-    "EXECUTOR_RESTART_RESULT",
-    "EXECUTOR_UPGRADE_RESULT",
-    "TASK_BUSY",
-    "TASK_PAUSED",
-    "TASK_PAUSE_FAILED",
     "TASK_GUIDANCE_ACK",
-    "CONVERSATION_TURN_ACK",
-    "CONVERSATION_TURN_EVENT",
-    "CONVERSATION_COMMANDS_RESULT",
-    "QODER_MODEL_CATALOG_RESULT",
     "TASK_HANDOFF",
 )
 
@@ -243,6 +233,33 @@ class InboundFrameRouter:
         if frame_type == "MCP_CONNECTION_TEST_RESULT":
             await self._mcp_connection_test(executor_session, parsed)
             return
+        if frame_type == "EXECUTOR_RESTART_RESULT":
+            await self._restart_result(executor_session, parsed)
+            return
+        if frame_type == "EXECUTOR_UPGRADE_RESULT":
+            await self._upgrade_result(executor_session, parsed)
+            return
+        if frame_type == "TASK_BUSY":
+            await self._busy(executor_session, parsed)
+            return
+        if frame_type == "TASK_PAUSED":
+            await self._paused(executor_session, parsed)
+            return
+        if frame_type == "TASK_PAUSE_FAILED":
+            await self._pause_failed(executor_session, parsed)
+            return
+        if frame_type == "CONVERSATION_TURN_ACK":
+            await self._conversation_ack(executor_session, parsed)
+            return
+        if frame_type == "CONVERSATION_TURN_EVENT":
+            await self._conversation_event(executor_session, parsed)
+            return
+        if frame_type == "CONVERSATION_COMMANDS_RESULT":
+            await self._commands_result(executor_session, parsed)
+            return
+        if frame_type == "QODER_MODEL_CATALOG_RESULT":
+            await self._catalog_result(executor_session, parsed)
+            return
         if frame_type in _UNWIRED:
             logger.info(
                 "inbound %s not connected executorId=%s",
@@ -330,6 +347,18 @@ class InboundFrameRouter:
             executor_session.executor_id,
             executor_session.tenant_id,
         )
+        started_at = payload.get("startedAt")
+        if isinstance(started_at, str) and started_at.strip() != "":
+            from autowonder.executors.restart import on_restart_heartbeat
+
+            async with SessionLocal() as session:
+                await on_restart_heartbeat(
+                    session,
+                    executor_session.executor_id,
+                    executor_session.tenant_id,
+                    started_at,
+                    payload.get("restartRequestId"),
+                )
 
     async def _ack(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
         dispatch_id = _long(payload, "dispatchId")
@@ -456,6 +485,166 @@ class InboundFrameRouter:
                 _long(payload, "size"),
             )
             await session.commit()
+
+    async def _restart_result(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.executors.restart import on_restart_result
+
+        await on_restart_result(executor_session.executor_id, payload)
+
+    async def _upgrade_result(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.executors.upgrade import on_upgrade_result
+
+        async with SessionLocal() as session:
+            await on_upgrade_result(session, executor_session.executor_id, payload)
+
+    async def _busy(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
+        from autowonder.dispatch.executor_reports import on_busy
+
+        dispatch_id = _long(payload, "dispatchId")
+        logger.info(
+            "inbound TASK_BUSY dispatchId=%s executorId=%s reason=%s",
+            dispatch_id,
+            executor_session.executor_id,
+            _text(payload, "reason"),
+        )
+        async with SessionLocal() as session:
+            await on_busy(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                dispatch_id,
+            )
+
+    async def _paused(self, executor_session: ExecutorSession, payload: dict[str, Any]) -> None:
+        from autowonder.dispatch.executor_reports import on_paused
+
+        dispatch_id = _long(payload, "dispatchId")
+        logger.info(
+            "inbound TASK_PAUSED dispatchId=%s executorId=%s checkpointSeq=%s",
+            dispatch_id,
+            executor_session.executor_id,
+            _long(payload, "checkpointSeq"),
+        )
+        async with SessionLocal() as session:
+            durable = await _durable_receipt(
+                session,
+                executor_session.tenant_id,
+                dispatch_id,
+                _long(payload, "checkpointSeq"),
+                _text(payload, "checkpointSha256"),
+            )
+            paused = await on_paused(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                dispatch_id,
+                durable,
+            )
+        await _send_result_ack(executor_session, dispatch_id, paused)
+
+    async def _pause_failed(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.dispatch.executor_reports import on_pause_failed
+
+        dispatch_id = _long(payload, "dispatchId")
+        logger.info(
+            "inbound TASK_PAUSE_FAILED dispatchId=%s executorId=%s",
+            dispatch_id,
+            executor_session.executor_id,
+        )
+        async with SessionLocal() as session:
+            accepted = await on_pause_failed(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                dispatch_id,
+                _text(payload, "error"),
+            )
+        await _send_result_ack(executor_session, dispatch_id, accepted)
+
+    async def _conversation_ack(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.conversations.runtime_reports import acknowledge_turn
+
+        async with SessionLocal() as session:
+            await acknowledge_turn(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                _long(payload, "conversationId"),
+                _long(payload, "turnId"),
+                _text(payload, "status"),
+                _text(payload, "error"),
+                _text(payload, "replyMarkdown"),
+                _text(payload, "sessionId"),
+            )
+
+    async def _conversation_event(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.conversations.runtime_reports import persist_turn_event
+
+        async with SessionLocal() as session:
+            await persist_turn_event(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                _long(payload, "conversationId"),
+                _long(payload, "turnId"),
+                _int(payload, "dispatchAttempt"),
+                _long(payload, "eventSeq"),
+                _int(payload, "chunkIndex"),
+                _int(payload, "chunkCount"),
+                _text(payload, "eventType"),
+                _text(payload, "payloadFragment"),
+            )
+
+    async def _commands_result(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.conversations.runtime_reports import store_commands_result
+
+        async with SessionLocal() as session:
+            await store_commands_result(
+                session,
+                executor_session.tenant_id,
+                executor_session.executor_id,
+                _long(payload, "conversationId"),
+                _text(payload, "status"),
+                _text(payload, "commands"),
+                _text(payload, "error"),
+            )
+
+    async def _catalog_result(
+        self,
+        executor_session: ExecutorSession,
+        payload: dict[str, Any],
+    ) -> None:
+        from autowonder.executors.catalog import accept_catalog_result
+
+        await accept_catalog_result(
+            executor_session.tenant_id,
+            executor_session.executor_id,
+            payload,
+        )
 
 
 async def _apply_ack(session: AsyncSession, tenant_id: int, dispatch_id: int) -> None:

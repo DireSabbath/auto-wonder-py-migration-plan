@@ -10,6 +10,7 @@ from autowonder.conversations.records import (
     find_conversation,
     find_elicitation,
     find_turn,
+    insert_elicitation_if_absent,
     list_pending_by_turn,
     list_pending_elicitations,
     restore_pending_if_status,
@@ -147,6 +148,88 @@ async def send_elicitation_reply(
         "conversation runtime transport is not available: "
         + f"{conversation_id}:{turn_id}:{request_id}:{action}"
     )
+
+
+def elicitation_terminal_status(action: object) -> str | None:
+    """运行时 resolved 事件里的动作对应卡片终态。未知动作不落库。"""
+    if action == "accept":
+        return _ANSWERED
+    if action == "decline":
+        return _DECLINED
+    if action == "cancel":
+        return _CANCELED
+    return None
+
+
+async def on_runtime_event(
+    session: AsyncSession,
+    tenant_id: int,
+    conversation_id: int,
+    turn_id: int,
+    event_type: str,
+    payload: str,
+) -> None:
+    """打开或结束问答卡片。畸形事件只记日志，不打断事件流。"""
+    if not event_type.startswith("acp_elicitation"):
+        return
+    try:
+        root = json.loads(payload)
+    except json.JSONDecodeError:
+        logger.warning(
+            "acp elicitation event payload unparsable conversationId=%s turnId=%s type=%s",
+            conversation_id,
+            turn_id,
+            event_type,
+        )
+        return
+    data = root.get("data") if isinstance(root, dict) else None
+    request_id = data.get("requestId") if isinstance(data, dict) else None
+    if not isinstance(request_id, str) or request_id.strip() == "":
+        logger.warning(
+            "acp elicitation event without requestId conversationId=%s turnId=%s type=%s",
+            conversation_id,
+            turn_id,
+            event_type,
+        )
+        return
+    if event_type == "acp_elicitation":
+        mode = data.get("mode") if isinstance(data, dict) else None
+        message = data.get("message") if isinstance(data, dict) else None
+        schema = data.get("requestedSchema") if isinstance(data, dict) else None
+        schema_json = None
+        if schema is not None:
+            schema_json = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        text = None
+        if isinstance(message, str):
+            text = message[:1024]
+        chosen = "form"
+        if isinstance(mode, str) and mode.strip() != "":
+            chosen = mode
+        await insert_elicitation_if_absent(
+            session,
+            AgentConversationElicitation(
+                tenant_id=tenant_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                request_id=request_id,
+                mode=chosen,
+                message=text,
+                schema_json=schema_json,
+                status=_PENDING,
+            ),
+        )
+        return
+    if event_type == "acp_elicitation_resolved":
+        action = data.get("action") if isinstance(data, dict) else None
+        status = elicitation_terminal_status(action)
+        if status is None:
+            logger.warning(
+                "acp elicitation resolved with unknown action conversationId=%s requestId=%s",
+                conversation_id,
+                request_id,
+            )
+            return
+        await settle_if_pending(session, tenant_id, conversation_id, request_id, status, None)
 
 
 async def _require_processing_turn(

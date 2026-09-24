@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from typing import Any
 
 from autowonder.core.redis import redis_client
@@ -17,6 +18,7 @@ from autowonder.ws.session import session_registry
 logger = logging.getLogger(__name__)
 
 CONVERSATION_REDIS_CHANNEL = "autowonder:conversation-events"
+_server_event_seq = int(time.time() * 1000)
 SCHEDULED_RUN_PATTERN = "scheduled-run:*"
 DISPATCH_PATTERN = "dispatch:*"
 
@@ -106,6 +108,49 @@ async def _close_replaced(executor_id: int) -> None:
             "failed to close replaced session via broadcast executorId=%s",
             executor_id,
             exc_info=True,
+        )
+
+
+def next_server_event_seq() -> int:
+    """服务端直推事件的序号按时间递增，避免和运行时从 1 开始的序号撞车。"""
+    global _server_event_seq
+    _server_event_seq += 1
+    return _server_event_seq
+
+
+async def publish_conversation_event(
+    conversation_id: int,
+    turn_id: int,
+    event_seq: int,
+    event_type: str,
+    payload_json: str | None,
+) -> None:
+    """把会话事件发到浏览器订阅的 Redis 频道。发布失败不回滚已经落下的事件。"""
+    event: dict[str, object] = {
+        "conversationId": conversation_id,
+        "turnId": turn_id,
+        "eventSeq": event_seq,
+        "eventType": event_type,
+    }
+    try:
+        if payload_json is not None:
+            event["payload"] = json.loads(payload_json)
+        envelope = {
+            "channel": "conversation:" + str(conversation_id),
+            "type": "CONVERSATION_TURN_EVENT",
+            "payload": event,
+            "timestamp": int(time.time() * 1000),
+        }
+        await redis_client().publish(
+            CONVERSATION_REDIS_CHANNEL,
+            json.dumps(envelope, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        logger.warning(
+            "conversation event browser publish failed conversationId=%s turnId=%s eventSeq=%s",
+            conversation_id,
+            turn_id,
+            event_seq,
         )
 
 

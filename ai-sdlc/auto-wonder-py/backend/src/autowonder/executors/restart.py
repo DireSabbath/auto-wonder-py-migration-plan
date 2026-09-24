@@ -5,11 +5,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.core.clock import SHANGHAI
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.redis import redis_client
+from autowonder.executors.models import Executor
 from autowonder.executors.presence import executor_online, supports_feature
 from autowonder.executors.store import require_executor
 from autowonder.ws.mailbox import deliver_executor_frame
@@ -95,6 +97,117 @@ async def request_restart(
         await _save(executor_id, result)
         await redis_client().delete(_lock_key(executor_id))
     return result
+
+
+def apply_restart_result(
+    state: dict[str, Any] | None,
+    request_id: object,
+    status: object,
+    message: object,
+) -> dict[str, Any] | None:
+    """进行中的同一次重启才接受 UPDATING、RESTARTING 或 FAILED。"""
+    if state is None or not isinstance(request_id, str):
+        return None
+    if state.get("requestId") != request_id or state.get("status") not in _ACTIVE:
+        return None
+    if not isinstance(status, str) or status not in {"UPDATING", "RESTARTING", "FAILED"}:
+        return None
+    updated = dict(state)
+    updated["status"] = status
+    text = ""
+    if isinstance(message, str):
+        text = message[:1000]
+    updated["message"] = text
+    return updated
+
+
+def parse_started_at(value: object, now: datetime) -> datetime | None:
+    """心跳里的启动时间必须能解析，且落在 2020 之后、当前时刻加 5 分钟之前。"""
+    if not isinstance(value, str) or value.strip() == "":
+        return None
+    try:
+        started = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    if started > now + timedelta(seconds=300):
+        return None
+    if started < datetime(2020, 1, 1, tzinfo=UTC):
+        return None
+    return started
+
+
+def complete_restart(
+    state: dict[str, Any] | None,
+    request_id: object,
+    started_millis: int,
+    completed_at: str,
+) -> dict[str, Any] | None:
+    """新的进程启动时间晚于发起重启时记下的时间，才算重启完成。"""
+    if state is None or not isinstance(request_id, str):
+        return None
+    if state.get("requestId") != request_id or state.get("status") not in _ACTIVE:
+        return None
+    previous = state.get("previousStartedAt")
+    if isinstance(previous, int) and not isinstance(previous, bool) and started_millis <= previous:
+        return None
+    updated = dict(state)
+    updated["status"] = "COMPLETED"
+    updated["message"] = "客户端已重新启动并上线"
+    updated["completedAt"] = completed_at
+    return updated
+
+
+async def on_restart_result(executor_id: int, frame: dict[str, Any]) -> None:
+    """写入重启阶段。失败时释放互斥锁，成功阶段继续等心跳。"""
+    current = await restart_status(executor_id)
+    updated = apply_restart_result(
+        current,
+        frame.get("requestId"),
+        frame.get("status"),
+        frame.get("message"),
+    )
+    if updated is None:
+        return
+    await _save(executor_id, updated)
+    if updated["status"] == "FAILED":
+        await redis_client().delete(_lock_key(executor_id))
+
+
+async def on_restart_heartbeat(
+    session: AsyncSession,
+    executor_id: int,
+    tenant_id: int,
+    started_at: object,
+    restart_request_id: object,
+) -> None:
+    """心跳带上新的进程启动时间时，记下启动时刻并结束匹配的重启。"""
+    started = parse_started_at(started_at, datetime.now(UTC))
+    if started is None:
+        return
+    wall = started.astimezone(SHANGHAI).replace(tzinfo=None)
+    await session.execute(
+        update(Executor)
+        .where(
+            Executor.id == executor_id,
+            Executor.tenant_id == tenant_id,
+            Executor.is_deleted == 0,
+        )
+        .values(last_started_at=wall)
+    )
+    await session.commit()
+    current = await restart_status(executor_id)
+    updated = complete_restart(
+        current,
+        restart_request_id,
+        int(started.timestamp() * 1000),
+        instant_text(datetime.now(UTC)),
+    )
+    if updated is None:
+        return
+    await _save(executor_id, updated)
+    await redis_client().delete(_lock_key(executor_id))
 
 
 async def _save(executor_id: int, state: dict[str, Any]) -> None:

@@ -1,7 +1,9 @@
 """其余 16 个定时任务的一轮扫描。锁和间隔与 Java ``@Scheduled`` 一致。"""
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -24,6 +26,12 @@ from autowonder.db.rows import rowcount
 from autowonder.db.session import SessionLocal
 from autowonder.dispatch.models import Dispatch
 from autowonder.dispatch.recovery import reconcile, retry_packaging, transition
+from autowonder.executors.catalog import (
+    catalog_snapshot_json,
+    clear_catalog_exchange,
+    put_catalog_ticket,
+    take_catalog_result,
+)
 from autowonder.executors.models import Executor, ExecutorUpdateTask
 from autowonder.executors.presence import current_version, executor_online, supports_feature
 from autowonder.executors.upgrade import deliver_task
@@ -78,6 +86,8 @@ _CATALOG_LOCK = "model-catalog:refresh:"
 _CATALOG_COOLDOWN = "model-catalog:cooldown:"
 _CATALOG_INFLIGHT = "model-catalog:inflight:"
 _CATALOG_SNAPSHOT = "model-catalog:snapshot:"
+_CATALOG_ACTIVE = ("PACKAGING", "DISPATCHED", "ACKED", "RUNNING", "PAUSING")
+_CATALOG_WAIT_SECONDS = 20
 _CATALOG_FEATURE = "QODER_MODEL_CATALOG_V1"
 _CATALOG_KINDS = {"qoder": "QODER_CLI", "qodercn": "QODER_CN_CLI"}
 _ACK_TIMEOUT = "DISPATCH_ACK_TIMEOUT: 接单确认超时，旧执行已隔离，请确认外部操作后重试"
@@ -587,7 +597,10 @@ async def _request_catalog(provider: str) -> None:
             continue
         if not await supports_feature(executor.id, _CATALOG_FEATURE):
             continue
+        if await _catalog_executor_busy(executor.id):
+            continue
         request_id = str(uuid.uuid4())
+        await put_catalog_ticket(request_id, executor.tenant_id, executor.id, provider)
         frame = {
             "type": "QODER_MODEL_CATALOG_REQUEST",
             "requestId": request_id,
@@ -598,7 +611,41 @@ async def _request_catalog(provider: str) -> None:
             executor.id,
             json.dumps(frame, ensure_ascii=False, separators=(",", ":")),
         )
+        result = await _wait_catalog_result(request_id)
+        await clear_catalog_exchange(request_id)
         sent += 1
+        models = result.get("models") if result is not None else None
+        if result is not None and result.get("success") is True and isinstance(models, list):
+            await redis_client().set(
+                _CATALOG_SNAPSHOT + provider,
+                catalog_snapshot_json(provider, executor.id, models),
+            )
+            return
+
+
+async def _catalog_executor_busy(executor_id: int) -> bool:
+    async with SessionLocal() as session:
+        active = await session.scalar(
+            select(func.count())
+            .select_from(Dispatch)
+            .where(
+                Dispatch.executor_id == executor_id,
+                Dispatch.status.in_(_CATALOG_ACTIVE),
+                Dispatch.is_deleted == 0,
+            )
+        )
+    return active != 0
+
+
+async def _wait_catalog_result(request_id: str) -> dict[str, object] | None:
+    deadline = time.monotonic() + _CATALOG_WAIT_SECONDS
+    while True:
+        result = await take_catalog_result(request_id)
+        if result is not None:
+            return result
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.05)
 
 
 async def _recover_stale_turns() -> None:
