@@ -7,7 +7,7 @@
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +19,7 @@ from autowonder.db.session import SessionLocal
 from autowonder.debuglogs.issue import record_task_result_report
 from autowonder.dispatch.checkpoint import CheckpointEngine, SqlCheckpointRepo
 from autowonder.dispatch.models import Dispatch
-from autowonder.dispatch.pending import drain_pending
+from autowonder.dispatch.pending import drain_pending, run_pending
 from autowonder.dispatch.recovery import execution_source
 from autowonder.scheduledtasks.capability import require_scheduled_capability
 from autowonder.ws.frames import task_handoff_result, task_result_ack
@@ -48,6 +48,15 @@ RESULT_MUTABLE_STATUSES = frozenset(
 )
 RESULT_BLOCKED_STATUSES = frozenset({"PAUSING", "PAUSED", "PAUSE_FAILED", "CANCELED"})
 FAILOVER_SOURCE_STATUSES = frozenset({"DISPATCHED", "ACKED", "RUNNING"})
+FAILOVER_MARKER_SECONDS = 1
+SESSION_RECOVERY_TTL_SECONDS = 86400
+MAX_SESSION_RECOVERY_FAILOVERS = 1
+MAX_PROGRESS_TEXT_CHARS = 1024
+SESSION_RECOVERY_COUNTER_SCRIPT = (
+    "local count = redis.call('INCR', KEYS[1])\n"
+    "if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end\n"
+    "return count\n"
+)
 DISPATCH_FRAME_TYPES = frozenset(
     {
         "TASK_ACK",
@@ -469,6 +478,8 @@ class InboundFrameRouter:
                     executor_session.tenant_id,
                     executor_session.executor_id,
                     dispatch_id,
+                    category,
+                    _text(payload, "error"),
                 )
             else:
                 accepted = await _apply_result(
@@ -512,7 +523,9 @@ class InboundFrameRouter:
                         dispatch_id,
                         embedded,
                     )
-            if accepted:
+            if accepted and failover:
+                await run_pending(session, dispatch_id)
+            elif accepted:
                 try:
                     await drain_pending(session, executor_session.agent_id)
                 except Exception:
@@ -942,28 +955,49 @@ async def _apply_failover(
     tenant_id: int,
     executor_id: int,
     dispatch_id: int,
+    failure_category: str | None,
+    error: str | None,
 ) -> bool:
-    """执行器故障把仍在跑的调度退回 PENDING。乐观锁冲突时最多再读三次。"""
-    for _attempt in range(3):
-        dispatch = await _load_dispatch(session, tenant_id, dispatch_id, None)
-        if dispatch is None:
-            return False
-        if dispatch.status in TERMINAL_STATUSES:
+    """提供者故障把仍由该执行器持有的活跃派发退回 PENDING，并留下一秒冷却。"""
+    if (
+        not isinstance(failure_category, str)
+        or failure_category not in EXECUTOR_FAILURE_CATEGORIES
+    ):
+        return False
+    current = await _load_dispatch(session, tenant_id, dispatch_id, executor_id)
+    if current is None:
+        return False
+    await _mark_provider_unavailable(executor_id, failure_category)
+    if (
+        failure_category == "runtime_recovery"
+        and await _session_recovery_count(dispatch_id) > MAX_SESSION_RECOVERY_FAILOVERS
+    ):
+        reason = "SESSION_RECOVERY_EXHAUSTED: " + ("null" if error is None else error)
+        logger.error(
+            "provider session recovery exhausted dispatchId=%s executorId=%s",
+            dispatch_id,
+            executor_id,
+        )
+        from autowonder.dispatch.pending import fail_and_drive
+
+        await fail_and_drive(session, current, reason)
+        return True
+    for _retry in range(3):
+        if current.status in TERMINAL_STATUSES:
             return True
-        if dispatch.status in {"PAUSING", "PAUSED", "PAUSE_FAILED"}:
-            return False
-        if dispatch.executor_id != executor_id:
+        if current.executor_id != executor_id:
             return True
-        if dispatch.status not in FAILOVER_SOURCE_STATUSES:
+        if current.status in {"PAUSING", "PAUSED", "PAUSE_FAILED"}:
             return False
+        owned_version = current.version
         result = await session.execute(
             update(Dispatch)
             .where(
-                Dispatch.id == dispatch.id,
+                Dispatch.id == current.id,
                 Dispatch.tenant_id == tenant_id,
                 Dispatch.executor_id == executor_id,
                 Dispatch.status.in_(FAILOVER_SOURCE_STATUSES),
-                Dispatch.version == dispatch.version,
+                Dispatch.version == owned_version,
                 Dispatch.is_deleted == 0,
             )
             .values(
@@ -977,10 +1011,145 @@ async def _apply_failover(
             )
         )
         if rowcount(result) == 1:
+            await _record_executor_failover(
+                session,
+                current,
+                executor_id,
+                failure_category,
+                error,
+                owned_version,
+            )
             await session.commit()
+            if execution_source(current) == "SCHEDULED_TASK_RUN":
+                from autowonder.scheduledtasks.notify import publish_runtime
+
+                await publish_runtime(session, current.tenant_id, current.workitem_id)
+            logger.warning(
+                "executor provider unavailable; dispatch requeued "
+                "dispatchId=%s executorId=%s category=%s",
+                dispatch_id,
+                executor_id,
+                failure_category,
+            )
             return True
-        session.expire(dispatch)
+        session.expire(current)
+        reloaded = await _load_dispatch(session, tenant_id, dispatch_id, None)
+        if reloaded is None:
+            return False
+        current = reloaded
     return False
+
+
+async def _mark_provider_unavailable(executor_id: int, failure_category: str) -> None:
+    """非会话恢复的故障给执行器打上一秒冷却，避免马上又选回它。"""
+    if failure_category == "runtime_recovery":
+        return
+    from autowonder.core.redis import redis_client
+
+    await redis_client().set(
+        "exec:provider-cooldown:" + str(executor_id),
+        "failover:" + failure_category,
+        ex=FAILOVER_MARKER_SECONDS,
+    )
+
+
+async def _session_recovery_count(dispatch_id: int) -> int:
+    """同一派发的会话恢复次数。计数器不可用时按已经用尽处理。"""
+    from autowonder.core.redis import redis_client
+
+    try:
+        value = await cast(
+            Any,
+            redis_client().eval(
+                SESSION_RECOVERY_COUNTER_SCRIPT,
+                1,
+                "dispatch:session-recovery:" + str(dispatch_id),
+                str(SESSION_RECOVERY_TTL_SECONDS),
+            ),
+        )
+    except Exception:
+        logger.error(
+            "session recovery counter unavailable dispatchId=%s",
+            dispatch_id,
+            exc_info=True,
+        )
+        return MAX_SESSION_RECOVERY_FAILOVERS + 1
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return MAX_SESSION_RECOVERY_FAILOVERS + 1
+
+
+async def _record_executor_failover(
+    session: AsyncSession,
+    dispatch: Dispatch,
+    executor_id: int,
+    failure_category: str,
+    error: str | None,
+    owned_version: int,
+) -> None:
+    """记下故障转移事件和审计。事件号用退回 PENDING 之前的版本。"""
+    from autowonder.audits.service import AuditRecord, record_required
+    from autowonder.core.clock import now_local
+    from autowonder.dispatch.models import DispatchRuntimeEvent
+
+    detail_error = "Runtime " + str(executor_id) + " · " + failure_category
+    if error is not None and error.strip() != "":
+        detail_error = detail_error + " · " + error
+    session.add(
+        DispatchRuntimeEvent(
+            tenant_id=dispatch.tenant_id,
+            workitem_id=dispatch.workitem_id,
+            dispatch_id=dispatch.id,
+            agent_id=dispatch.agent_id,
+            event_id=(
+                "dispatch:"
+                + str(dispatch.id)
+                + ":executor-failover:"
+                + str(owned_version)
+            ),
+            event_type="dispatch.executor_failover",
+            step_id=dispatch.sdlc_step_id,
+            message=(
+                "Runtime " + str(executor_id) + " 执行失败，正在切换其他在线 Runtime"
+            ),
+            error=_truncate_code_points(detail_error, MAX_PROGRESS_TEXT_CHARS),
+            detail_json={
+                "executorId": executor_id,
+                "failureCategory": failure_category,
+                "failureScope": "EXECUTOR",
+                "error": error,
+                "retrying": True,
+            },
+            event_time=now_local(),
+        )
+    )
+    record = AuditRecord(
+        tenant_id=dispatch.tenant_id,
+        actor_id=dispatch.agent_id,
+        actor_type="AGENT",
+        module="DISPATCH",
+        action="FAILOVER_DISPATCH",
+        target_type="dispatch",
+        target_id=dispatch.id,
+        trigger_type="EVENT",
+        trigger_source="runtime.result",
+        event_type="dispatch.executor_failover",
+    )
+    record.add("workitemId", dispatch.workitem_id)
+    record.add("sdlcStepId", dispatch.sdlc_step_id)
+    record.add("executorId", executor_id)
+    record.add("failureCategory", failure_category)
+    record.add("error", error)
+    await record_required(session, record)
+
+
+def _truncate_code_points(value: str, limit: int) -> str:
+    counted = 0
+    for index, _character in enumerate(value):
+        counted += 1
+        if counted == limit:
+            return value[: index + 1]
+    return value
 
 
 async def _write_status(

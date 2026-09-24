@@ -18,6 +18,11 @@ async def scheduled_task_id(session: AsyncSession, workspace_id: int, run_id: in
     return run.scheduled_task_id
 
 
+async def publish_runtime(session: AsyncSession, workspace_id: int, run_id: int) -> None:
+    """执行器故障转移后，向该运行的订阅频道发布 runtime 帧。运行不存在时不发布。"""
+    await _publish_run_frame(session, workspace_id, run_id, "runtime")
+
+
 async def publish_artifact(session: AsyncSession, workspace_id: int, run_id: int) -> None:
     """向该运行的订阅频道发布 artifact 帧。运行不存在时不发布。"""
     await _publish_run_frame(session, workspace_id, run_id, "artifact")
