@@ -2,7 +2,12 @@
 
 import json
 
+import pytest
+from starlette.websockets import WebSocketState
+
 from autowonder.dispatch.enqueue import workitem_idempotency_key
+from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.transport import deliver_pause
 from autowonder.ws.frames import (
     DEBUG_LOG_MAX_BYTES,
     ArtifactUploadedFrame,
@@ -17,6 +22,7 @@ from autowonder.ws.frames import (
     dump_frame,
     enabled_debug_log,
     parse_inbound_object,
+    task_pause_frame,
     task_result_ack,
 )
 from autowonder.ws.inbound import (
@@ -33,6 +39,7 @@ from autowonder.ws.inbound import (
     result_accepted,
 )
 from autowonder.ws.presence import normalize_capacity
+from autowonder.ws.session import ExecutorSession, session_registry
 
 _SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
@@ -303,6 +310,33 @@ def test_status_allow_sets_match_dispatch_service() -> None:
     assert result_accepted("FAILED", False) is True
     assert result_accepted("TIMEOUT", True) is False
     assert result_accepted("PENDING", False) is True
+
+
+class _OpenSocket:
+    def __init__(self) -> None:
+        self.client_state = WebSocketState.CONNECTED
+        self.sent: list[str] = []
+
+    async def send_text(self, message: str) -> None:
+        self.sent.append(message)
+
+
+async def test_deliver_pause_requires_assigned_executor() -> None:
+    """没有执行器时不发暂停帧。"""
+    with pytest.raises(RuntimeError, match="pause requires an assigned executor"):
+        await deliver_pause(Dispatch(id=1, executor_id=None))
+
+
+async def test_deliver_pause_sends_task_pause_on_local_session() -> None:
+    """本机连接直接收到有序的 TASK_PAUSE。"""
+    socket = _OpenSocket()
+    session = ExecutorSession(99001, 1, 1, 3, "pause-session", socket)  # type: ignore[arg-type]
+    await session_registry.register(session)
+    try:
+        await deliver_pause(Dispatch(id=44, executor_id=99001))
+    finally:
+        await session_registry.remove_by_session_id(session.session_id)
+    assert socket.sent == [task_pause_frame(44, 99001)]
 
 
 def test_capacity_normalization() -> None:

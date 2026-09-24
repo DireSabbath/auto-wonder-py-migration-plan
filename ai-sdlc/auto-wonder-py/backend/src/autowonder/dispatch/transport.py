@@ -1,10 +1,18 @@
-"""执行器控制帧。WebSocket 接入前，暂停帧没有通道可发。"""
+"""执行器控制帧。本机有连接就直发，否则广播给持有会话的节点。"""
 
 from autowonder.dispatch.models import Dispatch
+from autowonder.ws.frames import task_pause_frame
+from autowonder.ws.mailbox import deliver_executor_frame
 
 PAUSE_SEND_FAILURE = "暂停请求发送失败，请重试暂停"
 
 
-def deliver_pause(_dispatch: Dispatch) -> None:
-    """向执行器发送暂停。当前没有连接，调用方按发送失败处理。"""
-    raise RuntimeError(PAUSE_SEND_FAILURE)
+async def deliver_pause(dispatch: Dispatch) -> None:
+    """向已分配的执行器发送 ``TASK_PAUSE``。"""
+    executor_id = dispatch.executor_id
+    if executor_id is None:
+        raise RuntimeError("pause requires an assigned executor")
+    try:
+        await deliver_executor_frame(executor_id, task_pause_frame(dispatch.id, executor_id))
+    except Exception as error:
+        raise RuntimeError("WebSocket pause send failed") from error

@@ -5,7 +5,7 @@
 """
 
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import cast
@@ -42,7 +42,7 @@ STOP_UNCONFIRMED = "CANCELED_STOP_UNCONFIRMED: 平台已结束，执行器停止
 USER_CANCELED = "USER_CANCELED"
 PACKAGE_TRANSIENT = "TASK_PACKAGE_TRANSIENT_ERROR"
 
-Pause = Callable[[Dispatch], None]
+Pause = Callable[[Dispatch], Awaitable[None]]
 Online = Callable[[int], bool]
 SnapshotOf = Callable[[int], DispatchSnapshot | None]
 
@@ -479,7 +479,7 @@ async def send_stop(
     row.gmt_modified = now_local()
     await session.commit()
     try:
-        pause(dispatch)
+        await pause(dispatch)
     except Exception:
         logger.warning(
             "cancel control delivery deferred dispatchId=%s",

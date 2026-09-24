@@ -69,7 +69,7 @@ class Transport:
         self.calls: list[Dispatch] = []
         self.error: BaseException | None = None
 
-    def pause(self, dispatch: Dispatch) -> None:
+    async def pause(self, dispatch: Dispatch) -> None:
         self.calls.append(dispatch)
         if self.error is not None:
             raise self.error

@@ -1,6 +1,6 @@
 """用户请求暂停一条工单派发。发送失败时把状态写成 PAUSE_FAILED。"""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,14 +23,14 @@ async def request_workitem_pause(
     workitem_id: int,
     dispatch_id: int,
     user_id: int,
-    pause: Callable[[Dispatch], None] = deliver_pause,
+    pause: Callable[[Dispatch], Awaitable[None]] = deliver_pause,
 ) -> Dispatch:
     """把可暂停的工单派发改成 PAUSING，并向执行器发暂停帧。"""
     dispatch = await _require(session, tenant_id, workitem_id, dispatch_id)
     if dispatch.status == "PAUSED":
         return dispatch
     if dispatch.status == "PAUSING":
-        pause(dispatch)
+        await pause(dispatch)
         return dispatch
     if dispatch.status not in PAUSEABLE and dispatch.status != "PAUSE_FAILED":
         raise BizError(ErrorCode.CONFLICT, "当前执行状态不能暂停")
@@ -57,7 +57,7 @@ async def request_workitem_pause(
     dispatch.error = None
     dispatch.version = dispatch.version + 1
     try:
-        pause(dispatch)
+        await pause(dispatch)
     except Exception as send_failed:
         await _mark_failed(session, dispatch, user_id, send_failed)
         raise
