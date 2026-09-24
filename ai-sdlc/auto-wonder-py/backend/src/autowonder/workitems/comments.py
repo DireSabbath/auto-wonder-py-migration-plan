@@ -1,6 +1,7 @@
 """工单评论、明文 @ 和提及通知。"""
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -37,7 +38,7 @@ async def add_comment(
     session: AsyncSession,
     workitem_id: int,
     content_md: str | None,
-    target_human_ids: list[int | None] | None,
+    target_human_ids: Sequence[int | None] | None,
     tenant_id: int,
     user_id: int,
 ) -> tuple[CommentView, list[MentionNotice]]:
@@ -77,7 +78,7 @@ async def add_agent_comment(
     session: AsyncSession,
     workitem_id: int,
     content_md: str | None,
-    target_human_ids: list[int | None] | None,
+    target_human_ids: Sequence[int | None] | None,
     tenant_id: int,
     agent_id: int,
     initiator_user_id: int | None,
@@ -166,7 +167,7 @@ async def publish_mentions(session: AsyncSession, notices: list[MentionNotice]) 
 
 
 async def _explicit_humans(
-    session: AsyncSession, tenant_id: int, target_human_ids: list[int | None] | None
+    session: AsyncSession, tenant_id: int, target_human_ids: Sequence[int | None] | None
 ) -> dict[int, User]:
     humans: dict[int, User] = {}
     if target_human_ids is None:

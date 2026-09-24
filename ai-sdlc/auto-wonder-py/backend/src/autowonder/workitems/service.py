@@ -316,6 +316,69 @@ async def transition(
     return await _detail(session, workitem_id)
 
 
+async def agent_transition(
+    session: AsyncSession,
+    workitem_id: int,
+    to_status_code: str,
+    tenant_id: int,
+    agent_id: int,
+) -> WorkitemView:
+    """按状态编码沿迁移边流转。操作者记为数字员工。"""
+    workitem = await _live_in_tenant(session, workitem_id, tenant_id)
+    to_node = await session.scalar(
+        select(StatusNode)
+        .where(
+            StatusNode.template_id == workitem.template_id,
+            StatusNode.code == to_status_code,
+        )
+        .limit(1)
+    )
+    if to_node is None or workitem.status_node_id is None:
+        raise BizError(ErrorCode.ILLEGAL_TRANSITION)
+    from_node_id = workitem.status_node_id
+    edge = await session.scalar(
+        select(StatusTransition)
+        .where(
+            StatusTransition.template_id == workitem.template_id,
+            StatusTransition.from_node_id == from_node_id,
+            StatusTransition.to_node_id == to_node.id,
+        )
+        .limit(1)
+    )
+    if edge is None:
+        raise BizError(ErrorCode.ILLEGAL_TRANSITION)
+    from_node = await _find_node(session, from_node_id)
+    changed = await _cas(
+        session,
+        workitem_id,
+        tenant_id,
+        workitem.version,
+        {"status_node_id": to_node.id, "modifier_id": agent_id},
+        scheduled_set=False,
+    )
+    if changed == 0:
+        raise BizError(ErrorCode.WORKITEM_VERSION_CONFLICT)
+    from_code = None
+    if from_node is not None:
+        from_code = from_node.code
+    await _write_event(
+        session,
+        tenant_id,
+        workitem_id,
+        "STATUS_CHANGE",
+        from_code,
+        to_node.code,
+        "AGENT",
+        agent_id,
+        None,
+    )
+    publish_status_changed(
+        WorkitemStatusChanged("AGENT", tenant_id, workitem_id, to_node.id, agent_id)
+    )
+    await session.commit()
+    return await _detail(session, workitem_id)
+
+
 async def assign(
     session: AsyncSession,
     workitem_id: int,

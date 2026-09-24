@@ -28,6 +28,21 @@ async def publish_derived_workitem(session: AsyncSession, workspace_id: int, run
     await _publish_run_frame(session, workspace_id, run_id, "derived-workitem")
 
 
+async def publish_comment(
+    session: AsyncSession, workspace_id: int, run_id: int, comment_id: int
+) -> None:
+    """先发评论服务的原始帧，再发订阅通道上的 comment 帧。"""
+    channel = "scheduled-run:" + str(run_id)
+    await redis_client().publish(
+        channel,
+        json.dumps(
+            {"type": "comment", "runId": run_id, "commentId": comment_id},
+            separators=(",", ":"),
+        ),
+    )
+    await _publish_run_frame(session, workspace_id, run_id, "comment")
+
+
 async def _publish_run_frame(
     session: AsyncSession,
     workspace_id: int,
