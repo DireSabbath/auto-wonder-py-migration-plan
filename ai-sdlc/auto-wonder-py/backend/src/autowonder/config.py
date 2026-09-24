@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     )
     community_edition: bool = Field(default=True, validation_alias="AUTOWONDER_COMMUNITY_EDITION")
     aone_enabled: bool = Field(default=False, validation_alias="AUTOWONDER_AONE_ENABLED")
+    executor_auto_update_enabled: bool = Field(
+        default=True,
+        validation_alias="AUTOWONDER_RUNTIME_EXECUTOR_AUTO_UPDATE_ENABLED",
+    )
     s3_enabled: bool = Field(default=False, validation_alias="S3_ENABLED")
     s3_endpoint: str = Field(default="", validation_alias="S3_ENDPOINT")
     s3_public_endpoint: str = Field(default="", validation_alias="S3_PUBLIC_ENDPOINT")
