@@ -1,4 +1,8 @@
-"""18 个定时任务的触发契约，间隔与 Java ``@Scheduled`` 的默认值一致。"""
+"""18 个定时任务的触发契约。
+
+间隔数字与 Java ``@Scheduled(fixedDelay)`` 的默认值一致：上一次结束后再等这段时间。
+``initial_delay_seconds`` 对应 ``initialDelay``，缺省表示立即执行第一次。
+"""
 
 from dataclasses import dataclass
 

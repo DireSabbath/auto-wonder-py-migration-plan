@@ -1,13 +1,23 @@
 """定时任务的错过策略、触发键和调度登记。这些检查不连接数据库。"""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED  # type: ignore[import-untyped]
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 
-from autowonder.jobs.catalog import SCHEDULED_JOBS
+from autowonder.core.clock import SHANGHAI
+from autowonder.jobs.catalog import SCHEDULED_JOBS, ScheduledJob
 from autowonder.jobs.cluster import under_lock
 from autowonder.jobs.scheduled import due_occurrences, misfire_plan
-from autowonder.jobs.scheduler import RUNNERS, _trigger
+from autowonder.jobs.scheduler import (
+    RUNNERS,
+    _cron_trigger,
+    arm_interval,
+    first_run_at,
+    fixed_delay_listener,
+)
 from autowonder.jobs.sweeps import (
     _POLL_ATTEMPTS,
     poll_interval_seconds,
@@ -28,18 +38,79 @@ def test_catalog_names_match_runners() -> None:
     assert [job.name for job in SCHEDULED_JOBS] == list(RUNNERS)
 
 
-def test_cron_and_delayed_interval_triggers() -> None:
-    """上海凌晨 3 点用 cron；飞书收件箱第一次执行晚 15 秒。"""
+def test_cron_and_fixed_delay_first_run() -> None:
+    """上海凌晨 3 点用 cron。飞书第一次晚 15 秒，其余间隔任务立即执行。"""
     nightly = next(
         job for job in SCHEDULED_JOBS if job.name == "human_agent_participation_snapshot"
     )
     feishu = next(job for job in SCHEDULED_JOBS if job.name == "feishu_inbox_drain")
-    cron = _trigger(nightly)
-    interval = _trigger(feishu)
+    inbound = next(job for job in SCHEDULED_JOBS if job.name == "aone_inbound_poll")
+    cron = _cron_trigger(nightly)
+    now = datetime.now(SHANGHAI)
     assert cron.fields[5].expressions[0].first == 3
     assert cron.fields[7].expressions[0].first == 0
-    assert interval.interval == timedelta(seconds=3)
-    assert interval.start_date > datetime.now(UTC) + timedelta(seconds=10)
+    assert first_run_at(feishu, now) - now == timedelta(seconds=15)
+    assert first_run_at(inbound, now) == now
+
+
+async def test_fixed_delay_starts_after_the_previous_run_finishes() -> None:
+    """间隔从结束时刻起算。执行中的时间不计入下一次等待。"""
+    loop = asyncio.get_running_loop()
+    starts: list[float] = []
+    completions: list[float] = []
+    done = asyncio.Event()
+
+    async def probe() -> None:
+        starts.append(loop.time())
+        if len(starts) == 1:
+            await asyncio.sleep(0.3)
+            completions.append(loop.time())
+            return
+        done.set()
+
+    spec = ScheduledJob("probe", "interval", every_seconds=0.4)
+    scheduler = AsyncIOScheduler()
+    scheduler.add_listener(
+        fixed_delay_listener(scheduler, (spec,), {"probe": probe}),
+        EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
+    )
+    arm_interval(scheduler, "probe", probe, datetime.now(SHANGHAI))
+    scheduler.start()
+    try:
+        await asyncio.wait_for(done.wait(), timeout=3)
+    finally:
+        scheduler.shutdown(wait=False)
+    gap = starts[1] - completions[0]
+    assert gap >= 0.35
+    assert gap < 1.5
+
+
+async def test_fixed_delay_reschedules_after_an_error() -> None:
+    """任务抛错后仍从上一次结束时刻再等固定间隔，与 Spring 的错误处理后重排一致。"""
+    loop = asyncio.get_running_loop()
+    starts: list[float] = []
+    done = asyncio.Event()
+
+    async def probe() -> None:
+        starts.append(loop.time())
+        if len(starts) == 1:
+            raise RuntimeError("scan failed")
+        done.set()
+
+    spec = ScheduledJob("probe", "interval", every_seconds=0.25)
+    scheduler = AsyncIOScheduler()
+    scheduler.add_listener(
+        fixed_delay_listener(scheduler, (spec,), {"probe": probe}),
+        EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
+    )
+    arm_interval(scheduler, "probe", probe, datetime.now(SHANGHAI))
+    scheduler.start()
+    try:
+        await asyncio.wait_for(done.wait(), timeout=3)
+    finally:
+        scheduler.shutdown(wait=False)
+    assert len(starts) == 2
+    assert starts[1] - starts[0] >= 0.2
 
 
 def test_hourly_due_occurrences_include_the_cursor() -> None:
