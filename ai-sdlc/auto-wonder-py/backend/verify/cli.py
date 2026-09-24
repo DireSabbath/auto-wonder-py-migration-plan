@@ -67,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.outbox_flow import outbox_flow
 
         verdict = outbox_flow(args.base_url)
+    elif args.command == "presign":
+        from verify.presign_flow import presign_flow
+
+        verdict = presign_flow(args.base_url)
     elif args.command == "parity":
         from verify.parity import parity
 
