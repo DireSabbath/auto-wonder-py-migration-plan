@@ -10,6 +10,7 @@ from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from autowonder.agents.models import (
     Agent,
@@ -21,6 +22,12 @@ from autowonder.agents.models import (
 from autowonder.artifacts.documents import TYPE as REQUIREMENT_DOC
 from autowonder.artifacts.models import Artifact
 from autowonder.clarifications.models import Clarification
+from autowonder.config import get_settings
+from autowonder.dispatch.checkpoint import (
+    CheckpointEngine,
+    RevisionArtifact,
+    SqlCheckpointRepo,
+)
 from autowonder.dispatch.enqueue import is_interaction
 from autowonder.dispatch.models import Dispatch
 from autowonder.memories.models import Memory
@@ -30,6 +37,8 @@ from autowonder.sdlcs.models import SdlcStep
 from autowonder.skills.models import Skill
 from autowonder.squads.models import SquadMember
 from autowonder.statemachines.models import StatusNode
+from autowonder.storage.factory import resolve_bucket
+from autowonder.storage.objects import get_object_storage
 from autowonder.taskpackages.context import (
     PackageContext,
     TaskArtifactRef,
@@ -854,6 +863,8 @@ async def _source_revisions(
     source_id: int | None,
     recovery_source: bool,
 ) -> list[TaskArtifactRef]:
+    """恢复来源先放检查点基线，再放交付修订。普通交付只有成功派发的修订。"""
+    baselines: list[TaskArtifactRef] = []
     delivery: list[TaskArtifactRef] = []
     visited: set[int] = set()
     current_id = source_id
@@ -888,10 +899,43 @@ async def _source_revisions(
             ):
                 continue
             delivery.append(TaskArtifactRef(name=artifact.name, oss_ref=artifact.oss_ref))
+        if recovery_source:
+            baseline = await _checkpoint_baseline(session, tenant_id, current_id)
+            if baseline is not None:
+                baselines.append(baseline)
         current_id = (
             source.delivery_source_dispatch_id
             if source.delivery_source_dispatch_id is not None
             else _parse_source_dispatch_id(source.idempotency_key)
         )
         direct = False
-    return delivery
+    return baselines + delivery
+
+
+async def _checkpoint_baseline(
+    session: AsyncSession, tenant_id: int, dispatch_id: int
+) -> TaskArtifactRef | None:
+    def read(sync_session: Session) -> RevisionArtifact | None:
+        return _checkpoint_revision(sync_session, tenant_id, dispatch_id)
+
+    try:
+        artifact = await session.run_sync(read)
+    except Exception:
+        logger.warning(
+            "checkpoint repo revision fallback unavailable sourceDispatchId=%s",
+            dispatch_id,
+            exc_info=True,
+        )
+        return None
+    if artifact is None:
+        return None
+    return TaskArtifactRef(name=artifact.name, oss_ref=artifact.oss_ref)
+
+
+def _checkpoint_revision(
+    sync_session: Session, tenant_id: int, dispatch_id: int
+) -> RevisionArtifact | None:
+    settings = get_settings()
+    bucket = resolve_bucket(settings.oss_task_pkg_bucket, settings.oss_bucket)
+    engine = CheckpointEngine(get_object_storage(), bucket)
+    return engine.find_repo_revision(tenant_id, dispatch_id, SqlCheckpointRepo(sync_session))
