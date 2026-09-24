@@ -513,8 +513,13 @@ async def delete_workspace(
     workspace_id: int,
     operator_id: int,
 ) -> WorkspaceView:
-    """逻辑删除并释放名称。定时任务在同一事务里暂停，在途派发在提交后处理。"""
+    """逻辑删除并释放名称。定时任务在同一事务里暂停，在途派发在提交后处理。
+
+    返回的是删除前读到的工作空间。SQL 会把 version 加一，但响应仍用删除前的值。
+    """
     workspace = await _require_manageable(session, workspace_id, operator_id)
+    result = _to_view(workspace)
+    await _apply_manage_flags(session, result, workspace, operator_id)
     deleted = rowcount(
         await session.execute(
             update(Org)
@@ -541,8 +546,6 @@ async def delete_workspace(
     await record_required(session, audit)
     await session.commit()
     await stop_deleted_workspace_dispatches(session, workspace_id, operator_id)
-    result = _to_view(workspace)
-    await _apply_manage_flags(session, result, workspace, operator_id)
     return result
 
 
@@ -624,6 +627,7 @@ async def restore_workspace(
         name = require_name(requested_name)
     if await _count_active_by_name(session, name, None) > 0:
         raise BizError(ErrorCode.ORG_RESTORE_NAME_CONFLICT)
+    shown_version = workspace.version
     restored = rowcount(
         await session.execute(
             update(Org)
@@ -656,7 +660,7 @@ async def restore_workspace(
     await session.commit()
     result = _to_view(workspace)
     result.name = name
-    result.version = workspace.version + 1
+    result.version = shown_version + 1
     await _apply_manage_flags(session, result, workspace, operator_id)
     return result
 

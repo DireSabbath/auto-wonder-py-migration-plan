@@ -90,7 +90,7 @@ async def test_comment_records_agent_audit_log() -> None:
     assert body["authorRef"] == 300
     assert body["workitemId"] == 200
     assert body["contentMd"] == "done"
-    assert isinstance(body["gmtCreate"], int)
+    assert body["gmtCreate"].endswith("+00:00")
     assert "success" not in body
     comment = _comments(session)[0]
     assert comment.source_type == "WORKITEM"
