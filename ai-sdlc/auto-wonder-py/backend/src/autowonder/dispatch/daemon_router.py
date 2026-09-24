@@ -18,6 +18,7 @@ from autowonder.dispatch.checkpoint import (
     dispatch_by_id_statement,
     store_dispatch_from_row,
 )
+from autowonder.dispatch.package_url import refresh_package_url
 from autowonder.dispatch.recovery_claim import claim_http_response, claim_recovery
 from autowonder.storage.objects import get_object_storage
 
@@ -174,3 +175,16 @@ async def recovery_claim(
     """续认领活动派发。成功时附上当前版本的环境变量，并禁止缓存。"""
     status, body = await claim_recovery(session, dispatchId, token)
     return claim_http_response(status, body)
+
+
+@router.post("/{dispatchId}/package-url")
+async def package_url(
+    dispatchId: int,
+    token: Annotated[str, Query()],
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """为仍在进行的派发重新签发任务包下载地址。"""
+    status, body = await refresh_package_url(session, dispatchId, token)
+    if body is None:
+        return Response(status_code=status)
+    return JSONResponse(status_code=status, content=body)
