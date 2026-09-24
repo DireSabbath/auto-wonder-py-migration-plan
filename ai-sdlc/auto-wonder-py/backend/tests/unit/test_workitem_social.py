@@ -4,6 +4,7 @@ from datetime import datetime
 
 from autowonder.agents.models import Agent, AgentVersion
 from autowonder.core.errors import BizError, ErrorCode
+from autowonder.core.result import dump_data
 from autowonder.dispatch.enqueue import enqueue_comment_interaction, enqueue_workitem
 from autowonder.dispatch.models import Dispatch, DispatchRecoveryCheckpoint
 from autowonder.guidance.mentions import (
@@ -182,6 +183,13 @@ def test_participant_json_uses_is_agent() -> None:
     body = ParticipantView(user_id=4, name="构建员", agent=True).model_dump(by_alias=True)
     assert body["isAgent"] is True
     assert body["userId"] == 4
+
+
+def test_timeline_item_json_uses_agent() -> None:
+    """统一时间线没有 @JsonGetter，Jackson 把 boolean isAgent 写成 agent。"""
+    body = dump_data(TimelineItemView(type="comment", agent=True))
+    assert body["agent"] is True
+    assert "isAgent" not in body
 
 
 async def test_follow_is_idempotent_and_hides_inactive_members() -> None:

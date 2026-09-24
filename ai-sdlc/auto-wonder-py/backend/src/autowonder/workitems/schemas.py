@@ -199,7 +199,8 @@ class TimelineItemView(ApiModel):
     author_id: int | None = None
     author_name: str | None = None
     author_type: str | None = None
-    agent: bool = Field(default=False, serialization_alias="isAgent")
+    # Lombok 对 boolean isAgent 生成 isAgent()，Jackson 去掉 is 前缀，键名是 agent。
+    agent: bool = False
     content: str | None = None
     gmt_create: datetime | None = None
     source_provider: str | None = None
