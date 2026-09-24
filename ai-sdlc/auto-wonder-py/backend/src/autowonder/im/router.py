@@ -13,11 +13,17 @@ from autowonder.core.schema import ApiModel
 from autowonder.db.session import get_session
 from autowonder.im.channels import (
     UpdateChannelRequest,
+    decrypt_secret,
+    find_enabled,
     list_channels,
     update_channel,
 )
+from autowonder.im.dingtalk import DingTalkImProvider, system_now_ms
+from autowonder.im.feishu import FEISHU_OPEN_API, FeishuImProvider, shared_feishu_http
 from autowonder.im.identities import list_identities, send_test, update_identity
+from autowonder.im.models import PlatformImChannelConfig
 from autowonder.im.providers import DINGTALK, FEISHU, ImProviderRegistry
+from autowonder.integrations.dingtalk.sender import shared_sender
 from autowonder.platform.service import require_system_admin
 from autowonder.security.crypto import AesGcmSecretCrypto
 
@@ -42,8 +48,29 @@ def _cipher() -> AesGcmSecretCrypto:
     return AesGcmSecretCrypto(get_settings().secret_master_key)
 
 
-def _registry() -> ImProviderRegistry:
-    return ImProviderRegistry([])
+class _RequestChannels:
+    """当前请求里的通道读取和解密。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def find_enabled(self, provider: str) -> PlatformImChannelConfig | None:
+        """当前选中且启用的通道。"""
+        return await find_enabled(self._session, provider)
+
+    def decrypt_secret(self, row: PlatformImChannelConfig | None) -> str | None:
+        """还原通道密钥。"""
+        return decrypt_secret(row, _cipher())
+
+
+def _registry(session: AsyncSession) -> ImProviderRegistry:
+    configs = _RequestChannels(session)
+    return ImProviderRegistry(
+        [
+            DingTalkImProvider(configs, shared_sender(), system_now_ms),
+            FeishuImProvider(configs, shared_feishu_http(), FEISHU_OPEN_API),
+        ]
+    )
 
 
 @identity_router.get("")
@@ -64,7 +91,7 @@ async def update_feishu_identity(
 @identity_router.post("/feishu/test")
 async def test_feishu_identity(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """发送飞书测试通知。"""
-    await send_test(session, _user_id(), FEISHU, _registry())
+    await send_test(session, _user_id(), FEISHU, _registry(session))
     return ok(None)
 
 
@@ -80,7 +107,7 @@ async def update_dingtalk_identity(
 @identity_router.post("/dingtalk/test")
 async def test_dingtalk_identity(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """发送钉钉测试通知。"""
-    await send_test(session, _user_id(), DINGTALK, _registry())
+    await send_test(session, _user_id(), DINGTALK, _registry(session))
     return ok(None)
 
 
