@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import and_, case, func, literal_column, select, update
@@ -46,7 +46,7 @@ _SINCE_30_DAYS = literal_column("UTC_TIMESTAMP() - INTERVAL 30 DAY")
 
 def utc_now() -> datetime:
     """当前 UTC 瞬间，测试可以替换。"""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def pause_active_by_workspace(
@@ -178,9 +178,16 @@ async def list_tasks(
     )
 
 
-def preview_times(cron_expression: str | None, timezone_name: str | None, count: int) -> list[datetime]:
+def preview_times(
+    cron_expression: str | None, timezone_name: str | None, count: int
+) -> list[datetime]:
     """用当前时间预览接下来的触发瞬间。"""
-    return _SCHEDULE.preview(normalize_cron(cron_expression), normalize_timezone(timezone_name), utc_now(), count)
+    return _SCHEDULE.preview(
+        normalize_cron(cron_expression),
+        normalize_timezone(timezone_name),
+        utc_now(),
+        count,
+    )
 
 
 async def summarize_tasks(
@@ -355,7 +362,9 @@ def list_statement(
     offset: int,
 ) -> Select[tuple[ScheduledTask]]:
     """列表 SQL：工作空间、未删除，可选状态、创建人、小队和名称。"""
-    statement = select(ScheduledTask).where(*_filters(workspace_id, status, creator_id, squad_id, keyword))
+    statement = select(ScheduledTask).where(
+        *_filters(workspace_id, status, creator_id, squad_id, keyword)
+    )
     return statement.order_by(ScheduledTask.id.desc()).limit(limit).offset(offset)
 
 
@@ -479,7 +488,7 @@ def naive_utc(value: datetime | None) -> datetime | None:
         return None
     if value.tzinfo is None:
         return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def aware_utc(value: datetime | None) -> datetime | None:
@@ -487,8 +496,8 @@ def aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def normalize_cron(expression: str | None) -> str | None:

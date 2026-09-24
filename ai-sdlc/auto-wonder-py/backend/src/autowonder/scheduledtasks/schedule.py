@@ -1,7 +1,7 @@
 """定时任务的 cron 与时区。非法表达式和时区都是 30003。"""
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, available_timezones
 
 from autowonder.core.errors import BizError, ErrorCode
@@ -25,7 +25,7 @@ class ScheduledTaskSchedule:
         found = cron.next_after(after.astimezone(zone), zone)
         if found is None:
             raise BizError(ErrorCode.SCHEDULED_TASK_CRON_INVALID)
-        return found.astimezone(timezone.utc)
+        return found.astimezone(UTC)
 
     def preview(
         self,
