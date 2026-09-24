@@ -100,6 +100,41 @@ async def insert_proposal(session: AsyncSession, row: EvolutionProposal) -> Evol
     return row
 
 
+async def list_recent_proposals(
+    session: AsyncSession,
+    tenant_id: int,
+    limit: int,
+) -> list[EvolutionProposal]:
+    """当前工作空间最近的提案，新的在前。"""
+    statement = (
+        select(EvolutionProposal)
+        .where(
+            EvolutionProposal.tenant_id == tenant_id,
+            EvolutionProposal.is_deleted == 0,
+        )
+        .order_by(EvolutionProposal.id.desc())
+        .limit(limit)
+    )
+    result = await session.execute(statement)
+    return list(result.scalars().all())
+
+
+async def list_recent_tenant_evidence(
+    session: AsyncSession,
+    tenant_id: int,
+    limit: int,
+) -> list[EvolutionEvidence]:
+    """当前工作空间最近的证据，新的在前。"""
+    statement = (
+        select(EvolutionEvidence)
+        .where(EvolutionEvidence.tenant_id == tenant_id)
+        .order_by(EvolutionEvidence.id.desc())
+        .limit(limit)
+    )
+    result = await session.execute(statement)
+    return list(result.scalars().all())
+
+
 async def mark_proposal(
     session: AsyncSession,
     proposal_id: int,

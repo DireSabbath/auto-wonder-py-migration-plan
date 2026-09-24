@@ -61,6 +61,7 @@ class MemorySession:
             rows.sort(key=lambda row: row.id, reverse=True)
         elif entity is EvolutionProposal:
             rows = [row for row in self.proposals if _matches(row, comps)]
+            rows.sort(key=lambda row: row.id, reverse=True)
         else:
             rows = []
         limit = _limit(statement)

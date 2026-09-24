@@ -29,6 +29,7 @@ from autowonder.dispatch.daemon_router import router as daemon_checkpoint_router
 from autowonder.dispatch.router import router as dispatch_router
 from autowonder.dispatch.router import trace_router
 from autowonder.environments.router import router as environment_router
+from autowonder.evolution.router import router as evolution_router
 from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
 from autowonder.memories.router import router as memory_router
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(backup_router)
     app.include_router(template_router)
     app.include_router(environment_router)
+    app.include_router(evolution_router)
     app.include_router(repo_router)
     app.include_router(debug_log_router)
     app.include_router(dispatch_router)
