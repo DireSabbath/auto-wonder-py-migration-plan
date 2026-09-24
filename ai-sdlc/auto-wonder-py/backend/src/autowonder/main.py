@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from autowonder import __version__
 from autowonder.agents.platform_router import agent_status_router, intelligence_router
 from autowonder.agents.router import router as agent_router
+from autowonder.ai.router import router as ai_session_router
 from autowonder.aiusage.daemon_router import router as daemon_usage_router
 from autowonder.aiusage.router import router as ai_usage_router
 from autowonder.api.errors import install_exception_handlers
@@ -22,6 +23,12 @@ from autowonder.backups.router import router as backup_router
 from autowonder.categories.router import router as category_router
 from autowonder.clarifications.router import router as clarification_router
 from autowonder.config import get_settings
+from autowonder.conversations.router import (
+    clarification_router as conversation_clarification_router,
+)
+from autowonder.conversations.router import (
+    platform_router as platform_conversation_router,
+)
 from autowonder.core.logging import configure_logging
 from autowonder.dashboards.router import router as dashboard_router
 from autowonder.debuglogs.router import router as debug_log_router
@@ -32,11 +39,22 @@ from autowonder.dispatch.router import trace_router
 from autowonder.environments.router import router as environment_router
 from autowonder.evolution.router import router as evolution_router
 from autowonder.executors.daemon_router import router as daemon_executor_router
+from autowonder.executors.router import router as executor_router
 from autowonder.executors.runtime_router import router as runtime_auto_update_router
 from autowonder.im.router import channel_router, identity_router
 from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
+from autowonder.integrations.dingtalk_bindings import router as dingtalk_binding_router
+from autowonder.integrations.extra_router import (
+    aone_router,
+    import_router,
+    receipt_router,
+    sync_router,
+)
+from autowonder.integrations.feishu_bindings import callback_router as feishu_callback_router
+from autowonder.integrations.feishu_bindings import router as feishu_binding_router
 from autowonder.integrations.router import router as integration_router
+from autowonder.mcp.protocol import router as mcp_protocol_router
 from autowonder.mcp.router import router as mcp_token_router
 from autowonder.memories.router import router as memory_router
 from autowonder.notifications.router import router as notification_router
@@ -45,6 +63,7 @@ from autowonder.platform.router import router as branding_router
 from autowonder.repos.router import router as repo_router
 from autowonder.scheduledtasks.router import router as scheduled_capability_router
 from autowonder.scheduledtasks.router import task_router as scheduled_task_router
+from autowonder.scheduledtasks.runs import router as scheduled_run_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.settings.router import router as setting_router
 from autowonder.skills.router import router as skill_router
@@ -55,6 +74,8 @@ from autowonder.users.router import router as user_router
 from autowonder.workitems.daemon_router import router as daemon_comment_router
 from autowonder.workitems.router import router as workitem_router
 from autowonder.workspaces.router import router as workspace_router
+from autowonder.ws.browser import router as browser_ws_router
+from autowonder.ws.executor import router as executor_ws_router
 
 
 def create_app() -> FastAPI:
@@ -72,10 +93,24 @@ def create_app() -> FastAPI:
     app.include_router(platform_admin_router)
     app.include_router(runtime_auto_update_router)
     app.include_router(integration_router)
+    app.include_router(aone_router)
+    app.include_router(dingtalk_binding_router)
+    app.include_router(feishu_binding_router)
+    app.include_router(feishu_callback_router)
+    app.include_router(receipt_router)
+    app.include_router(import_router)
+    app.include_router(sync_router)
     app.include_router(identity_router)
     app.include_router(channel_router)
     app.include_router(scheduled_capability_router)
     app.include_router(scheduled_task_router)
+    app.include_router(scheduled_run_router)
+    app.include_router(ai_session_router)
+    app.include_router(executor_router)
+    app.include_router(platform_conversation_router)
+    app.include_router(conversation_clarification_router)
+    app.include_router(executor_ws_router)
+    app.include_router(browser_ws_router)
     app.include_router(agent_router)
     app.include_router(agent_status_router)
     app.include_router(intelligence_router)
@@ -92,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(clarification_router)
     app.include_router(workitem_router)
     app.include_router(memory_router)
+    app.include_router(mcp_protocol_router)
     app.include_router(mcp_token_router)
     app.include_router(notification_router)
     app.include_router(dashboard_router)

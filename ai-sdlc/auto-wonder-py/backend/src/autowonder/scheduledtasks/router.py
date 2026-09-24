@@ -2,17 +2,28 @@
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.api.access import WorkspaceAccessLevel, require_access
+from autowonder.artifacts.documents import (
+    ArtifactOwner,
+    delete_requirement_document,
+    list_requirement_documents,
+    upload_named_files,
+)
 from autowonder.core.context import current, current_user_id, current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.db.session import get_session
 from autowonder.scheduledtasks.capability import capability_snapshot, require_scheduled_capability
-from autowonder.scheduledtasks.schemas import CreateScheduledTaskRequest, UpdateScheduledTaskRequest
+from autowonder.scheduledtasks.schemas import (
+    CreateScheduledTaskRequest,
+    RunNowRequest,
+    UpdateScheduledTaskRequest,
+)
 from autowonder.scheduledtasks.service import (
+    _run_view,
     archive_task,
     create_task,
     delete_task,
@@ -26,6 +37,7 @@ from autowonder.scheduledtasks.service import (
     task_health,
     update_task,
 )
+from autowonder.scheduledtasks.trigger import fire_manual
 
 router = APIRouter(
     tags=["scheduled-task-capability"],
@@ -213,6 +225,90 @@ async def delete_scheduled_task(
     require_owner(current_task.creator_id)
     await delete_task(session, id, version, _workspace_id(), _user_id())
     return ok(None)
+
+
+@task_router.post(
+    "/{id}/run-now",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "立即运行定时任务"))],
+)
+async def run_scheduled_task_now(
+    id: int,
+    body: RunNowRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """按 requestId 立即创建一次运行。版本必须和当前任务一致。"""
+    if body.request_id is None or body.request_id.strip() == "":
+        raise BizError(ErrorCode.SCHEDULED_TASK_VALIDATION_FAILED, "requestId 必须提供")
+    workspace_id = _workspace_id()
+    current_task = await get_task(session, id, workspace_id)
+    require_owner(current_task.creator_id)
+    if body.version is None or body.version != current_task.version:
+        raise BizError(ErrorCode.SCHEDULED_TASK_VERSION_CONFLICT)
+    run = await fire_manual(session, workspace_id, id, body.request_id)
+    await session.commit()
+    return ok(_run_view(run))
+
+
+@task_router.get("/{id}/documents")
+async def list_scheduled_task_documents(
+    id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """列出定时任务需求文档。"""
+    return ok(
+        await list_requirement_documents(
+            session,
+            ArtifactOwner("SCHEDULED_TASK", id),
+            _workspace_id(),
+        )
+    )
+
+
+@task_router.post(
+    "/{id}/documents",
+    dependencies=[
+        Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "上传定时任务需求文档"))
+    ],
+)
+async def upload_scheduled_task_documents(
+    id: int,
+    files: Annotated[list[UploadFile], File()],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """按提交顺序上传需求文档。"""
+    payload = [(item.filename, await item.read()) for item in files]
+    return ok(
+        await upload_named_files(
+            session,
+            ArtifactOwner("SCHEDULED_TASK", id),
+            payload,
+            _workspace_id(),
+            _user_id(),
+            "WEB",
+        )
+    )
+
+
+@task_router.delete(
+    "/{id}/documents/{artifactId}",
+    dependencies=[
+        Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "删除定时任务需求文档"))
+    ],
+)
+async def delete_scheduled_task_document(
+    id: int,
+    artifactId: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """删除一份定时任务需求文档。"""
+    await delete_requirement_document(
+        session,
+        ArtifactOwner("SCHEDULED_TASK", id),
+        artifactId,
+        _workspace_id(),
+        _user_id(),
+    )
+    return ok(True)
 
 
 @task_router.get("/{id}/runs")
