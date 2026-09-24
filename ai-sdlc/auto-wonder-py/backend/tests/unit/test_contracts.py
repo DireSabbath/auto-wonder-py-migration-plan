@@ -104,6 +104,8 @@ def test_auth_whitelist_matches_filter_rules() -> None:
     assert not is_whitelisted("GET", "/api/workitems")
     assert is_login_only_request("GET", "/api/workspaces/mine")
     assert is_login_only_request("POST", "/api/users/me/deactivation/revoke")
+    assert is_login_only_request("GET", "/api/users/me/im-identities")
+    assert is_login_only_request("PUT", "/api/platform/im-channels/dingtalk")
     assert not is_login_only_request("GET", "/api/workitems")
 
 

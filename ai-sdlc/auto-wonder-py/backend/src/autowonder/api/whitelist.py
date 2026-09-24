@@ -66,6 +66,8 @@ def is_login_only_request(method: str, path: str) -> bool:
         return True
     if normalized.startswith(PERSONAL_USER_API_PREFIX):
         return True
+    if normalized.startswith("/api/platform/im-channels"):
+        return True
     if method_name == "GET" and normalized == WORKSPACE_RECYCLE_BIN_PATH:
         return True
     if method_name in {"PUT", "DELETE"} and WORKSPACE_LIFECYCLE_PATH.fullmatch(normalized):

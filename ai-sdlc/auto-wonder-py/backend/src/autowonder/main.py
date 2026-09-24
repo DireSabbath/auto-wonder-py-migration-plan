@@ -33,6 +33,7 @@ from autowonder.environments.router import router as environment_router
 from autowonder.evolution.router import router as evolution_router
 from autowonder.executors.daemon_router import router as daemon_executor_router
 from autowonder.executors.runtime_router import router as runtime_auto_update_router
+from autowonder.im.router import channel_router, identity_router
 from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
 from autowonder.integrations.router import router as integration_router
@@ -70,6 +71,8 @@ def create_app() -> FastAPI:
     app.include_router(platform_admin_router)
     app.include_router(runtime_auto_update_router)
     app.include_router(integration_router)
+    app.include_router(identity_router)
+    app.include_router(channel_router)
     app.include_router(scheduled_capability_router)
     app.include_router(agent_router)
     app.include_router(agent_status_router)
