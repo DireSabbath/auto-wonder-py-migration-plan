@@ -457,12 +457,19 @@ async def resume_run(
     version: Annotated[int, Query()],
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """把暂停的运行改回排队。编排器尚未迁入时不再额外启动。"""
+    """把暂停的运行改回排队，再按冻结版本续跑。没有暂停派发时重新启动。"""
     workspace_id = _workspace_id()
+    user_id = _user_id()
     existing = await _require_run(session, workspace_id, runId)
     _require_owner(existing.owner_id)
-    updated = await transition_run(session, workspace_id, runId, version, "QUEUED", _user_id())
+    updated = await transition_run(session, workspace_id, runId, version, "QUEUED", user_id)
     await session.commit()
+    from autowonder.scheduledtasks.orchestrator import resume_paused, start_run
+
+    continued = await resume_paused(session, workspace_id, runId, user_id)
+    if not continued:
+        await start_run(workspace_id, runId, user_id)
+        session.expire_all()
     current_run = await _require_run(session, workspace_id, runId)
     return ok(_run_view(current_run if current_run is not None else updated))
 

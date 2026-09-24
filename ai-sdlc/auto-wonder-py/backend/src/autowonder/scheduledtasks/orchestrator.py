@@ -55,7 +55,9 @@ async def start_run(workspace_id: int, run_id: int, actor_id: int) -> None:
             if not isinstance(sdlc, dict):
                 sdlc_id = None
                 step_id = None
-            started = await _initialize(session, run, sdlc_id, step_id, actor_id)
+            started = await _initialize(
+                session, run, sdlc_id, step_id, run.initial_agent_id, actor_id
+            )
             if not started:
                 return
             run = await _load(session, workspace_id, run_id)
@@ -175,11 +177,122 @@ def _frozen_version(snapshot: dict[str, object], agent_id: int) -> int:
     return version_id
 
 
+async def resume_paused(
+    session: AsyncSession, workspace_id: int, run_id: int, user_id: int
+) -> bool:
+    """暂停派发存在时，用它的冻结版本开一条连续续跑。没有暂停派发时返回 False。"""
+    run = await _load(session, workspace_id, run_id)
+    if run is None or run.status != "QUEUED" or run.version is None:
+        return False
+    paused = await _latest_paused(session, workspace_id, run_id)
+    if paused is None:
+        return False
+    snapshot = _snapshot(run)
+    version_id = _frozen_version(snapshot, paused.agent_id)
+    started = await _initialize(
+        session,
+        run,
+        run.sdlc_id,
+        paused.sdlc_step_id,
+        paused.agent_id,
+        user_id,
+    )
+    if not started:
+        return False
+    run = await _load(session, workspace_id, run_id)
+    if run is None or run.status != "STARTING":
+        return False
+    from autowonder.scheduledtasks.notify import publish_status
+
+    await publish_status(session, workspace_id, run_id)
+    continuation = await _enqueue_scheduled_resume(session, run, paused, user_id)
+    await _pin_handoff_version(session, continuation, version_id)
+    moved = await _transition(session, run, "STARTING", "WAITING_EXECUTOR", user_id)
+    await session.commit()
+    if not moved:
+        return False
+    await run_pending(session, continuation.id)
+    return True
+
+
+async def _latest_paused(
+    session: AsyncSession, workspace_id: int, run_id: int
+) -> Dispatch | None:
+    rows = await session.scalars(
+        select(Dispatch).where(
+            Dispatch.tenant_id == workspace_id,
+            Dispatch.source_type == "SCHEDULED_TASK_RUN",
+            Dispatch.workitem_id == run_id,
+            Dispatch.is_deleted == 0,
+        )
+    )
+    paused: Dispatch | None = None
+    for row in rows.all():
+        if row.status == "PAUSED" and (paused is None or row.id > paused.id):
+            paused = row
+    return paused
+
+
+async def _enqueue_scheduled_resume(
+    session: AsyncSession,
+    run: ScheduledTaskRun,
+    source: Dispatch,
+    user_id: int,
+) -> Dispatch:
+    key = "scheduled-resume:" + str(run.id) + ":" + str(source.id) + ":native"
+    existing = await session.scalar(
+        select(Dispatch)
+        .where(
+            Dispatch.tenant_id == run.workspace_id,
+            Dispatch.idempotency_key == key,
+            Dispatch.is_deleted == 0,
+        )
+        .limit(1)
+    )
+    if existing is not None:
+        return existing
+    dispatch = Dispatch(
+        tenant_id=run.workspace_id,
+        source_type="SCHEDULED_TASK_RUN",
+        workitem_id=run.id,
+        sdlc_step_id=source.sdlc_step_id,
+        agent_id=source.agent_id,
+        status="PENDING",
+        attempt=source.attempt + 1,
+        idempotency_key=key,
+        resume_from_dispatch_id=source.id,
+        resume_mode="CONTINUOUS",
+        creator_id=user_id,
+        modifier_id=user_id,
+        version=0,
+        is_deleted=0,
+        debug_log_enabled=0,
+    )
+    try:
+        async with session.begin_nested():
+            session.add(dispatch)
+            await session.flush()
+    except IntegrityError:
+        winner = await session.scalar(
+            select(Dispatch)
+            .where(
+                Dispatch.tenant_id == run.workspace_id,
+                Dispatch.idempotency_key == key,
+            )
+            .limit(1)
+        )
+        if winner is None:
+            raise
+        return winner
+    return dispatch
+
+
 async def _initialize(
     session: AsyncSession,
     run: ScheduledTaskRun,
     sdlc_id: int | None,
     step_id: int | None,
+    agent_id: int,
     actor_id: int,
 ) -> bool:
     started_at = run.started_at if run.started_at is not None else now_local()
@@ -196,7 +309,7 @@ async def _initialize(
             status="STARTING",
             started_at=started_at,
             sdlc_id=sdlc_id,
-            current_agent_id=run.initial_agent_id,
+            current_agent_id=agent_id,
             current_step_id=step_id,
             modifier_id=actor_id,
             version=ScheduledTaskRun.version + 1,
