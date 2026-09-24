@@ -52,7 +52,9 @@ def _apply_tenant_criteria(execute_state: Any) -> None:
 
 
 def _tenant_criteria(model: type, workspace_id: int) -> Any:
-    def match_tenant(cls: Any, bound_workspace_id: int = workspace_id) -> Any:
-        return cls.tenant_id == bound_workspace_id
+    # 闭包变量会被当成绑定参数重新读取。默认参数不进入缓存键，
+    # 同一函数代码对象会一直沿用第一次编译进去的工作空间编号。
+    def match_tenant(cls: Any) -> Any:
+        return cls.tenant_id == workspace_id
 
     return with_loader_criteria(model, match_tenant, include_aliases=True)
