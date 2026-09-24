@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.ai.models import AiSession
 from autowonder.config import get_settings
-from autowonder.conversations.elicitation import settle_pending_for_turn
+from autowonder.conversations.elicitation import (
+    notify_canceled,
+    notify_expired,
+    settle_pending_for_turn,
+)
 from autowonder.conversations.models import (
     AgentConversation,
     AgentConversationElicitation,
@@ -687,9 +691,10 @@ async def _recover_stale_turns() -> None:
                 )
             ).all()
         )
+        settled: list[AgentConversationElicitation] = []
         for turn, conversation in rows:
             try:
-                await _recover_one(session, turn, conversation, cutoff)
+                settled.extend(await _recover_one(session, turn, conversation, cutoff))
             except Exception:
                 logger.warning(
                     "conversation stale turn recovery failed conversationId=%s turnId=%s",
@@ -698,6 +703,7 @@ async def _recover_stale_turns() -> None:
                     exc_info=True,
                 )
         await session.commit()
+        await notify_canceled(session, settled)
 
 
 async def _recover_one(
@@ -705,13 +711,13 @@ async def _recover_one(
     turn: AgentConversationTurn,
     conversation: AgentConversation,
     cutoff: datetime,
-) -> None:
+) -> list[AgentConversationElicitation]:
     if conversation.executor_id is None:
-        return
+        return []
     reported, active = await _runtime_activity(conversation.executor_id)
     action = recovery_action(reported, active, turn.id, turn.dispatch_attempt)
     if action.startswith("skip"):
-        return
+        return []
     if action == "fail":
         error = (
             "conversation runtime did not acknowledge after "
@@ -727,8 +733,8 @@ async def _recover_one(
             error,
         )
         if finalized == 1:
-            await settle_pending_for_turn(session, turn.tenant_id, turn.id)
-        return
+            return await settle_pending_for_turn(session, turn.tenant_id, turn.id)
+        return []
     claimed = await session.execute(
         update(AgentConversationTurn)
         .where(
@@ -751,13 +757,14 @@ async def _recover_one(
         )
     )
     if rowcount(claimed) == 1:
-        await settle_pending_for_turn(session, turn.tenant_id, turn.id)
         logger.info(
             "conversation stale turn redeliver conversationId=%s turnId=%s executorId=%s",
             turn.conversation_id,
             turn.id,
             conversation.executor_id,
         )
+        return await settle_pending_for_turn(session, turn.tenant_id, turn.id)
+    return []
 
 
 async def _runtime_activity(executor_id: int) -> tuple[bool, set[int]]:
@@ -785,8 +792,9 @@ async def _expire_elicitations(cutoff: datetime) -> None:
                 .limit(_ELICITATION_BATCH)
             )
         )
+        expired: list[AgentConversationElicitation] = []
         for row in rows:
-            await session.execute(
+            result = await session.execute(
                 update(AgentConversationElicitation)
                 .where(
                     AgentConversationElicitation.tenant_id == row.tenant_id,
@@ -796,7 +804,10 @@ async def _expire_elicitations(cutoff: datetime) -> None:
                 )
                 .values(status="EXPIRED", answer_json=None, gmt_modified=func.now())
             )
+            if rowcount(result) == 1:
+                expired.append(row)
         await session.commit()
+        await notify_expired(session, expired)
 
 
 async def _ai_sweep() -> None:

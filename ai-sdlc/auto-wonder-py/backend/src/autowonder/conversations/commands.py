@@ -12,8 +12,10 @@ from autowonder.conversations.constants import (
     PROBE_LOCK_TTL_SEC,
     SNAPSHOT_KEY_PREFIX,
 )
+from autowonder.conversations.models import AgentConversation
 from autowonder.conversations.records import find_conversation
 from autowonder.conversations.schemas import SlashCommandInput, SlashCommandView
+from autowonder.conversations.transport import send_commands_probe as deliver_commands_probe
 from autowonder.core.redis import redis_client
 
 logger = logging.getLogger(__name__)
@@ -73,14 +75,14 @@ async def refresh(session: AsyncSession, tenant_id: int, conversation_id: int) -
     if acquired is not True:
         return
     try:
-        await send_commands_probe(conversation_id)
+        await send_commands_probe(conversation)
     except Exception:
         logger.warning("commands probe dispatch failed conversationId=%s", conversation_id)
 
 
-async def send_commands_probe(conversation_id: int) -> None:
-    """向执行器要斜杠命令。WebSocket 传输尚未迁入。"""
-    raise RuntimeError("conversation runtime transport is not available: " + str(conversation_id))
+async def send_commands_probe(conversation: AgentConversation) -> None:
+    """向绑定执行器要斜杠命令。"""
+    await deliver_commands_probe(conversation)
 
 
 def _available_commands(root: object) -> list[object]:

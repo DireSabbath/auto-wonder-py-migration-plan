@@ -674,8 +674,8 @@ async def _platform_summary(
     cache: dict[int, Agent | None],
 ) -> PlatformConversationView:
     agent = await _cached_agent(session, cache, conversation.agent_id)
-    online = executor_online(conversation.executor_id)
-    features = protocol_features(conversation.executor_id)
+    online = await executor_online(conversation.executor_id)
+    features = await protocol_features(conversation.executor_id)
     capabilities = runtime_capabilities(online, features)
     name = None
     if agent is not None and agent.is_deleted != 1:
@@ -715,8 +715,8 @@ async def _clarification_view(
     name = None
     if agent is not None and agent.is_deleted != 1:
         name = agent.name
-    online = executor_online(conversation.executor_id)
-    features = protocol_features(conversation.executor_id)
+    online = await executor_online(conversation.executor_id)
+    features = await protocol_features(conversation.executor_id)
     return ClarificationConversationView(
         id=conversation.id,
         agent_id=conversation.agent_id,

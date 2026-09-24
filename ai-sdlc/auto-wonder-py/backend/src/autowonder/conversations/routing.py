@@ -1,4 +1,4 @@
-"""为会话选择执行器，并读取当前进程能看到的在线与协议能力。"""
+"""为会话选择执行器，并读取当前调度快照上的在线与协议能力。"""
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,7 @@ from autowonder.conversations.constants import (
 )
 from autowonder.conversations.records import count_environment_refs
 from autowonder.dispatch.selector import ProtocolCompatibilityError, select_dispatch_executor
-from autowonder.executors.registry import current_snapshot, is_online
+from autowonder.ws.presence import presence_manager
 
 
 class ProtocolUnsupported(Exception):
@@ -24,18 +24,21 @@ class ProtocolUnsupported(Exception):
         super().__init__("Executor runtime does not support required protocol feature " + feature)
 
 
-def executor_online(executor_id: int | None) -> bool:
-    """没有绑定执行器，或当前进程没有它的接入会话时视为离线。"""
+async def executor_online(executor_id: int | None) -> bool:
+    """在线键和当前调度快照都在，才算执行器在线。"""
     if executor_id is None:
         return False
-    return is_online(executor_id)
+    return await presence_manager.is_executor_online(executor_id)
 
 
-def protocol_features(executor_id: int | None) -> set[str]:
-    """协议能力挂在调度快照上。当前快照没有该字段，所以读到的集合是空的。"""
-    if executor_id is None or current_snapshot(executor_id) is None:
+async def protocol_features(executor_id: int | None) -> set[str]:
+    """协议能力在当前调度快照上。没有快照时前端看不到任何能力位。"""
+    if executor_id is None:
         return set()
-    return set()
+    snapshot = await presence_manager.current_dispatch_snapshot(executor_id)
+    if snapshot is None:
+        return set()
+    return set(snapshot.protocol_features)
 
 
 def protocol_supported(online: bool, features: set[str], feature: str) -> bool:

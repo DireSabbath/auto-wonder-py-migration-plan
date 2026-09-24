@@ -21,8 +21,12 @@ from autowonder.conversations.constants import (
     STATUS_QUEUED,
     TURN_CANCEL,
 )
-from autowonder.conversations.elicitation import settle_pending_for_turn
-from autowonder.conversations.models import AgentConversation, AgentConversationTurn
+from autowonder.conversations.elicitation import notify_canceled, settle_pending_for_turn
+from autowonder.conversations.models import (
+    AgentConversation,
+    AgentConversationElicitation,
+    AgentConversationTurn,
+)
 from autowonder.conversations.prompt import render_system_prompt
 from autowonder.conversations.records import (
     find_agent,
@@ -48,6 +52,12 @@ from autowonder.conversations.routing import (
     protocol_features,
     protocol_supported,
     select_executor,
+)
+from autowonder.conversations.transport import (
+    send_cancel as deliver_cancel,
+)
+from autowonder.conversations.transport import (
+    send_turn as deliver_send_turn,
 )
 from autowonder.core.clock import now_local
 from autowonder.core.context import current_request_id
@@ -225,12 +235,13 @@ async def request_turn_cancel(
         if promoted is not None:
             await _send(session, promoted)
         return
-    online = executor_online(conversation.executor_id)
-    features = protocol_features(conversation.executor_id)
+    online = await executor_online(conversation.executor_id)
+    features = await protocol_features(conversation.executor_id)
     if conversation.executor_id is None or not protocol_supported(online, features, TURN_CANCEL):
         raise BizError(ErrorCode.CONFLICT, "runtime does not support conversation turn cancel")
+    settled: list[AgentConversationElicitation] = []
     try:
-        await settle_pending_for_turn(session, tenant_id, turn_id)
+        settled = await settle_pending_for_turn(session, tenant_id, turn_id)
     except Exception:
         logger.warning(
             "conversation pending elicitation cancel failed conversationId=%s turnId=%s",
@@ -238,24 +249,28 @@ async def request_turn_cancel(
             turn_id,
         )
     try:
-        await send_cancel(conversation_id, turn_id)
+        await send_cancel(conversation, turn_id)
     except Exception as error:
         raise BizError(ErrorCode.SYSTEM_ERROR) from error
     await session.commit()
+    await notify_canceled(session, settled)
 
 
-async def send_cancel(conversation_id: int, turn_id: int) -> None:
-    """通知执行器停止生成。WebSocket 传输尚未迁入。"""
-    raise RuntimeError(
-        "conversation runtime transport is not available: " + f"{conversation_id}:{turn_id}"
-    )
+async def send_cancel(conversation: AgentConversation, turn_id: int) -> None:
+    """通知执行器停止生成。"""
+    await deliver_cancel(conversation, turn_id)
 
 
-async def deliver_turn(pending: _Pending) -> None:
-    """把轮次交给执行器。WebSocket 传输尚未迁入。"""
-    raise RuntimeError(
-        "conversation runtime transport is not available: "
-        + f"{pending.conversation.id}:{pending.turn_id}"
+async def deliver_turn(session: AsyncSession, pending: _Pending) -> None:
+    """把轮次交给绑定的执行器。"""
+    await deliver_send_turn(
+        session,
+        pending.conversation,
+        pending.turn_id,
+        pending.content,
+        pending.system_prompt,
+        pending.dispatch_attempt,
+        pending.request_id,
     )
 
 
@@ -416,7 +431,7 @@ async def _send(session: AsyncSession, pending: _Pending) -> None:
     current: _Pending | None = pending
     while current is not None:
         try:
-            await deliver_turn(current)
+            await deliver_turn(session, current)
         except Exception as error:
             current = await _mark_failed(session, current, error)
             continue
@@ -501,8 +516,10 @@ async def _refresh_prompt(
         if updated != 1:
             raise BizError(ErrorCode.SYSTEM_ERROR)
         conversation.agent_version_id = version.id
-    features = protocol_features(conversation.executor_id)
-    acp = protocol_supported(executor_online(conversation.executor_id), features, ACP_INTERACTION)
+    features = await protocol_features(conversation.executor_id)
+    acp = protocol_supported(
+        await executor_online(conversation.executor_id), features, ACP_INTERACTION
+    )
     return render_system_prompt(
         version.role_name,
         version.role_code,

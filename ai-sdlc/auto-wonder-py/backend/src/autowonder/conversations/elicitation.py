@@ -5,7 +5,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autowonder.conversations.models import AgentConversationElicitation
+from autowonder.conversations.models import AgentConversation, AgentConversationElicitation
 from autowonder.conversations.records import (
     find_conversation,
     find_elicitation,
@@ -18,7 +18,9 @@ from autowonder.conversations.records import (
 )
 from autowonder.conversations.routing import executor_online
 from autowonder.conversations.schemas import ElicitationView
+from autowonder.conversations.transport import send_elicitation_reply as deliver_elicitation_reply
 from autowonder.core.errors import BizError, ErrorCode
+from autowonder.ws.mailbox import next_server_event_seq, publish_conversation_event
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +95,7 @@ async def reply(
         raise BizError(ErrorCode.CONFLICT, "elicitation already settled: " + record.status)
     normalized = normalize_elicitation_reply(action, answer_json)
     await _require_processing_turn(session, tenant_id, conversation_id, record.turn_id)
-    await _require_online(session, tenant_id, conversation_id)
+    conversation = await _require_online(session, tenant_id, conversation_id)
     status = _ANSWERED if action == "accept" else _DECLINED
     settled = await settle_if_pending(
         session, tenant_id, conversation_id, request_id, status, normalized
@@ -104,7 +106,9 @@ async def reply(
             "elicitation was settled concurrently: " + request_id,
         )
     try:
-        await send_elicitation_reply(conversation_id, record.turn_id, request_id, action)
+        await send_elicitation_reply(
+            conversation, record.turn_id, request_id, action, normalized
+        )
     except Exception as error:
         await restore_pending_if_status(session, tenant_id, conversation_id, request_id, status)
         logger.warning(
@@ -138,15 +142,92 @@ async def settle_pending_for_turn(
 
 
 async def send_elicitation_reply(
-    conversation_id: int,
+    conversation: AgentConversation,
     turn_id: int,
     request_id: str,
     action: str | None,
+    answer_json: str | None,
 ) -> None:
-    """把答案送回执行器。WebSocket 传输尚未迁入。"""
-    raise RuntimeError(
-        "conversation runtime transport is not available: "
-        + f"{conversation_id}:{turn_id}:{request_id}:{action}"
+    """把答案送回执行器。decline 与 cancel 不带答案。"""
+    await deliver_elicitation_reply(conversation, turn_id, request_id, action, answer_json)
+
+
+async def notify_canceled(
+    session: AsyncSession,
+    settled: list[AgentConversationElicitation],
+) -> None:
+    """提交之后才把取消帧和浏览器事件送出去。"""
+    for record in settled:
+        await notify_runtime_best_effort(session, record, "cancel", _CANCELED)
+        await notify_browser_best_effort(record, "cancel")
+
+
+async def notify_expired(
+    session: AsyncSession,
+    settled: list[AgentConversationElicitation],
+) -> None:
+    """过期卡片向执行器发 decline，并告诉浏览器卡片已经结束。"""
+    for record in settled:
+        await notify_runtime_best_effort(session, record, "decline", "EXPIRED")
+        await notify_browser_best_effort(record, "decline")
+
+
+async def notify_runtime_best_effort(
+    session: AsyncSession,
+    record: AgentConversationElicitation,
+    action: str,
+    status: str,
+) -> None:
+    """一张卡片投递失败不影响后面的卡片。"""
+    conversation = await find_conversation(session, record.tenant_id, record.conversation_id)
+    if conversation is None or conversation.executor_id is None:
+        logger.info(
+            "acp elicitation %s not delivered: conversation or executor gone "
+            "conversationId=%s requestId=%s",
+            status,
+            record.conversation_id,
+            record.request_id,
+        )
+        return
+    try:
+        await send_elicitation_reply(
+            conversation, record.turn_id, record.request_id, action, None
+        )
+        logger.info(
+            "acp elicitation %s delivered conversationId=%s turnId=%s requestId=%s",
+            status,
+            record.conversation_id,
+            record.turn_id,
+            record.request_id,
+        )
+    except Exception:
+        logger.warning(
+            "acp elicitation %s delivery failed conversationId=%s requestId=%s",
+            status,
+            record.conversation_id,
+            record.request_id,
+        )
+
+
+async def notify_browser_best_effort(
+    record: AgentConversationElicitation,
+    action: str,
+) -> None:
+    """浏览器推送失败不回滚已经落下的终态。"""
+    payload = json.dumps(
+        {
+            "type": "acp_elicitation_resolved",
+            "data": {"requestId": record.request_id, "action": action},
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    await publish_conversation_event(
+        record.conversation_id,
+        record.turn_id,
+        next_server_event_seq(),
+        "acp_elicitation_resolved",
+        payload,
     )
 
 
@@ -250,11 +331,12 @@ async def _require_online(
     session: AsyncSession,
     tenant_id: int,
     conversation_id: int,
-) -> None:
+) -> AgentConversation:
     conversation = await find_conversation(session, tenant_id, conversation_id)
     if (
         conversation is None
         or conversation.executor_id is None
-        or not executor_online(conversation.executor_id)
+        or not await executor_online(conversation.executor_id)
     ):
         raise BizError(ErrorCode.SYSTEM_ERROR)
+    return conversation
