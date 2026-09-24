@@ -36,6 +36,7 @@ from autowonder.executors.runtime_router import router as runtime_auto_update_ro
 from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
 from autowonder.integrations.router import router as integration_router
+from autowonder.mcp.router import router as mcp_token_router
 from autowonder.memories.router import router as memory_router
 from autowonder.notifications.router import router as notification_router
 from autowonder.platform.admin_router import router as platform_admin_router
@@ -86,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(clarification_router)
     app.include_router(workitem_router)
     app.include_router(memory_router)
+    app.include_router(mcp_token_router)
     app.include_router(notification_router)
     app.include_router(dashboard_router)
     app.include_router(audit_router)
