@@ -1,4 +1,4 @@
-"""验证命令：smoke、authchain、logscan、dispatch-e2e、pages 与 squad-flow。"""
+"""验证命令：smoke、authchain、logscan、dispatch-e2e、pages、squad-flow 与 parity。"""
 
 import argparse
 import json
@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bodies", default="")
     parser.add_argument("--app-start-line", type=int, default=0)
     parser.add_argument("--file-start-line", type=int, default=0)
+    parser.add_argument("--java-url", default="http://127.0.0.1:7001")
     args = parser.parse_args(argv)
     if args.command == "smoke":
         verdict = smoke(args.base_url)
@@ -54,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.squad_flow import squad_flow
 
         verdict = squad_flow(args.base_url)
+    elif args.command == "parity":
+        from verify.parity import parity
+
+        verdict = parity(args.base_url, args.java_url)
     else:
         verdict = {
             "command": args.command,

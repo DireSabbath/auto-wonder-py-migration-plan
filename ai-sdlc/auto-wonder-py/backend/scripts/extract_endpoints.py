@@ -63,8 +63,9 @@ def methods_of(block: str) -> list[str]:
 
 
 def class_prefix(text: str) -> list[str]:
-    """类上的 @RequestMapping 路径。没有注解时前缀为空字符串。"""
-    match = CLASS_MAPPING_RE.search(text)
+    """类声明之前的 @RequestMapping 路径。方法上的注解不是前缀。"""
+    head = text.partition(" class ")[0]
+    match = CLASS_MAPPING_RE.search(head)
     if match is None or match.group(1) is None:
         return [""]
     paths = string_literals(match.group(1))

@@ -136,4 +136,14 @@ def test_endpoint_catalog_contains_auth_login() -> None:
         (BACKEND / "verify" / "parity" / "cases" / "endpoints.yaml").read_text(encoding="utf-8")
     )
     assert {"method": "POST", "path": "/api/auth/login", "controller": "AuthController"} in catalog
+    assert {
+        "method": "GET",
+        "path": "/checkpreload.htm",
+        "controller": "HealthCheckController",
+    } in catalog
+    assert {
+        "method": "GET",
+        "path": "/status.taobao",
+        "controller": "HealthCheckController",
+    } in catalog
     assert len(catalog) == 375
