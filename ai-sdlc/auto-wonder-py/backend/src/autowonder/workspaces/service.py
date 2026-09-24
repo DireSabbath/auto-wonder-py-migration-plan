@@ -126,6 +126,38 @@ async def create_workspace(
     return result
 
 
+async def list_by_user_with_access(session: AsyncSession, user_id: int) -> list[WorkspaceView]:
+    """个人 MCP 令牌可见的工作空间。只含成员关系上的名称、描述和权限。"""
+    rows = (
+        await session.execute(
+            select(Org.id, Org.name, Org.description, Org.owner_id, OrgMember.access_level)
+            .join(OrgMember, Org.id == OrgMember.tenant_id)
+            .where(
+                OrgMember.user_id == user_id,
+                OrgMember.status == 0,
+                OrgMember.is_deleted == 0,
+                Org.is_deleted == 0,
+            )
+            .order_by(Org.gmt_create.desc())
+        )
+    ).all()
+    result: list[WorkspaceView] = []
+    for workspace_id, name, description, owner_id, access_name in rows:
+        access_level = exact_access_level(access_name)
+        owner = owner_id == user_id
+        result.append(
+            WorkspaceView(
+                id=workspace_id,
+                name=name,
+                description=description,
+                access_level=access_level.name,
+                is_owner=owner,
+                can_manage=owner or access_level == WorkspaceAccessLevel.ADMIN,
+            )
+        )
+    return result
+
+
 async def list_by_user(session: AsyncSession, user_id: int) -> list[WorkspaceView]:
     """当前用户加入的在用工作空间，带编辑弹层需要的完整字段。"""
     levels = await _levels_by_workspace(session, user_id)

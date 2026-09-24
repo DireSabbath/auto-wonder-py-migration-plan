@@ -245,6 +245,7 @@ from autowonder.workspaces.service import (
     find_member,
     get_current,
     list_by_user,
+    list_by_user_with_access,
 )
 
 LIST_PROJECTS = "autowonder.list_projects"
@@ -1398,7 +1399,7 @@ async def _invoke(
 
 async def _list_projects(session: AsyncSession, context: ToolExecutionContext) -> object:
     if context.workspace_id is None:
-        return await list_by_user(session, context.user_id)
+        return await list_by_user_with_access(session, context.user_id)
     view = await get_current(session, context.workspace_id)
     level = context.access_level
     if level is not None:

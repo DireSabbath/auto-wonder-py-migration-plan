@@ -92,7 +92,7 @@ async def handle_rpc(
         result = await invoke_tool(session, principal, name, arguments)
         structured = {"items": result} if isinstance(result, list) else result
         dumped = dump_data(structured)
-        text = json.dumps(dumped, ensure_ascii=False, separators=(",", ":"))
+        text = json.dumps(omit_nulls(dumped), ensure_ascii=False, separators=(",", ":"))
         return rpc_ok(
             request_id,
             {
@@ -102,6 +102,20 @@ async def handle_rpc(
             },
         )
     return rpc_error(request_id, -32601, "Method not found")
+
+
+def omit_nulls(value: object) -> object:
+    """Fastjson 默认不写出 null。数组里的 null 保留。"""
+    if isinstance(value, dict):
+        kept: dict[str, object] = {}
+        for key, item in value.items():
+            if item is None:
+                continue
+            kept[key] = omit_nulls(item)
+        return kept
+    if isinstance(value, list):
+        return [omit_nulls(item) for item in value]
+    return value
 
 
 def as_object_map(value: object) -> dict[str, Any]:
@@ -216,7 +230,10 @@ async def _rpc(
         response = rpc_error(body.get("id"), -32603, str(error))
     if accepts_event_stream_only(accept):
         payload = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
-        return Response(content="data:" + payload + "\n\n", media_type="text/event-stream")
+        return Response(
+            content="data:" + payload + "\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
     return JSONResponse(content=response)
 
 

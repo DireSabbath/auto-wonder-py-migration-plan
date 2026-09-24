@@ -10,6 +10,7 @@ from autowonder.mcp.protocol import (
     accepts_event_stream_only,
     handle_rpc,
     initialize_result,
+    omit_nulls,
     resolve_token,
     router,
     rpc_error,
@@ -69,6 +70,38 @@ async def test_unknown_method_is_not_found() -> None:
     assert body["id"] == 4
     assert "result" not in body
     assert body["error"] == {"code": -32601, "message": "Method not found"}
+
+
+def test_tool_text_omits_null_fields() -> None:
+    """工具结果的 text 与 Fastjson 一样不写出 null，数组中的 null 仍保留。"""
+    dumped = omit_nulls(
+        {
+            "items": [
+                {
+                    "id": 1,
+                    "name": "space",
+                    "background": None,
+                    "version": None,
+                    "isOwner": True,
+                }
+            ],
+            "note": None,
+        }
+    )
+    assert dumped == {"items": [{"id": 1, "name": "space", "isOwner": True}]}
+
+
+def test_event_stream_content_type_has_no_charset() -> None:
+    """只接受事件流时，Content-Type 与 Spring 的 text/event-stream 一致，不附加 charset。"""
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.headers["content-type"] == "text/event-stream"
+    assert response.text.startswith("data:")
+    assert response.text.endswith("\n\n")
 
 
 def test_rpc_without_token_returns_jsonrpc_error() -> None:
