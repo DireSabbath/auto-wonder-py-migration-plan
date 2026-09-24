@@ -170,17 +170,22 @@ async def _agent(
     if first is None or first.id is None:
         logger.info("handoff target sdlc has no steps sdlcId=%s", sdlc_id)
         return rejected_result("TARGET_SDLC_HAS_NO_STEPS", "target SDLC has no steps")
+    # ``_cas`` 会过期会话。展示和下一跳要用的字段先记下来。
+    previous_type = workitem.assignee_type
+    previous_ref = workitem.assignee_ref
+    version = workitem.version
+    step_id = first.id
     await _cas(
         session,
         workitem_id,
         tenant_id,
-        workitem.version,
-        {"sdlc_id": sdlc_id, "current_step_id": first.id, "modifier_id": _SYSTEM_USER_ID},
+        version,
+        {"sdlc_id": sdlc_id, "current_step_id": step_id, "modifier_id": _SYSTEM_USER_ID},
         scheduled_set=False,
     )
     session.expire_all()
     reloaded = await session.get(Workitem, workitem_id)
-    next_version = workitem.version
+    next_version = version
     if reloaded is not None:
         next_version = reloaded.version
     await _cas(
@@ -200,10 +205,10 @@ async def _agent(
         session,
         tenant_id,
         workitem_id,
-        workitem.assignee_ref,
+        previous_ref,
         agent_id,
         actor,
-        workitem.assignee_type,
+        previous_type,
         "AGENT",
     )
     logger.info(
@@ -212,10 +217,10 @@ async def _agent(
         target,
         agent_id,
         sdlc_id,
-        first.id,
+        step_id,
     )
     created = await enqueue_handoff(
-        session, tenant_id, workitem_id, first.id, agent_id, dispatch_id, _SYSTEM_USER_ID
+        session, tenant_id, workitem_id, step_id, agent_id, dispatch_id, _SYSTEM_USER_ID
     )
     await session.commit()
     await run_pending(session, created.id)
@@ -259,8 +264,11 @@ async def _human(
         return rejected_result(
             "TARGET_NOT_WORKSPACE_MEMBER", "human target is not an active workspace member"
         )
-    if workitem.assignee_type is not None and workitem.assignee_type.upper() == "HUMAN":
-        if workitem.assignee_ref == resolved:
+    previous_type = workitem.assignee_type
+    previous_ref = workitem.assignee_ref
+    title = workitem.title
+    if previous_type is not None and previous_type.upper() == "HUMAN":
+        if previous_ref == resolved:
             return human_result(resolved, fallback_reason)
     changed = await _cas(
         session,
@@ -281,10 +289,10 @@ async def _human(
         session,
         tenant_id,
         workitem_id,
-        workitem.assignee_ref,
+        previous_ref,
         resolved,
         actor,
-        workitem.assignee_type,
+        previous_type,
         "HUMAN",
     )
     if event.id is not None:
@@ -292,7 +300,7 @@ async def _human(
             WorkitemHumanAssigned(
                 tenant_id,
                 workitem_id,
-                workitem.title,
+                title,
                 event.id,
                 resolved,
                 actor.type,

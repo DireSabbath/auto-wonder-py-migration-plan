@@ -430,6 +430,9 @@ class _Chain:
         self.facts["handoffStatus"] = handoff_status
         self.facts["handoffTargetType"] = target_type
         self.facts["handoffTargetRef"] = target_ref
+        if result is not None:
+            self.facts["handoffReason"] = result.get("reasonCode")
+            self.facts["handoffMessage"] = result.get("message")
         self._check(
             "handoff_human",
             handoff_status == "HUMAN_ASSIGNED"
