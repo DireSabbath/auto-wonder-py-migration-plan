@@ -1,6 +1,7 @@
 """执行器产物上报的回执、路径和邻域调用。"""
 
 import re
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -144,6 +145,7 @@ def test_reported_artifact_upsert_reuses_the_primary_key() -> None:
         None,
         3,
         {"provider": "openai"},
+        datetime(2026, 9, 1, 8, 0, 0),
     )
     usage_sql = str(usage.compile(dialect=mysql.dialect()))
     assert "ON DUPLICATE KEY UPDATE" in usage_sql

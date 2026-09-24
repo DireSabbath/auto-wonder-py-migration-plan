@@ -2,14 +2,17 @@
 
 import json
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.aiusage.models import DispatchAiUsage
+from autowonder.artifacts.models import Artifact
 from autowonder.core.clock import now_local
 from autowonder.debuglogs.sanitizer import java_is_blank
 from autowonder.dispatch.models import Dispatch
@@ -17,6 +20,24 @@ from autowonder.dispatch.models import Dispatch
 logger = logging.getLogger(__name__)
 
 USAGE_ARTIFACT = "observability/usage.json"
+BACKFILL_BATCH_SIZE = 200
+
+
+class UsageObjectReader(Protocol):
+    """回填只按引用读取对象。"""
+
+    def get(self, oss_ref: str) -> bytes | None:
+        """按引用读取；不存在时返回空。"""
+
+
+@dataclass
+class UsageBackfillCounts:
+    """一次用量回填的计数。"""
+
+    scanned: int = 0
+    succeeded: int = 0
+    skipped: int = 0
+    failed: int = 0
 
 
 def is_usage_artifact(name: str | None) -> bool:
@@ -47,6 +68,7 @@ def usage_upsert_statement(
     credits: Decimal | None,
     total_tokens: int,
     raw_json: dict[str, Any],
+    usage_at: datetime,
 ) -> Any:
     """与 Java upsert 相同：执行器空值不覆盖已有执行器，产物 id 同理。"""
     statement = mysql_insert(DispatchAiUsage).values(
@@ -67,7 +89,7 @@ def usage_upsert_statement(
         credits=credits,
         total_tokens=total_tokens,
         raw_json=raw_json,
-        usage_at=now_local(),
+        usage_at=usage_at,
     )
     return statement.on_duplicate_key_update(
         id=text("LAST_INSERT_ID(id)"),
@@ -124,8 +146,9 @@ async def ingest_usage_artifact(
                 dispatch_id,
             )
             return
+        recorded_at = now_local()
         for entry in entries:
-            await _persist(session, dispatch, artifact_id, entry)
+            await _persist(session, dispatch, artifact_id, entry, recorded_at)
     except Exception:
         logger.warning(
             "usage artifact ingest failed artifactId=%s ossRef=%s workitemId=%s dispatchId=%s",
@@ -156,8 +179,9 @@ async def record_task_usage(
             tenant_id,
         )
         return
+    recorded_at = now_local()
     for entry in entries:
-        await _persist(session, dispatch, None, entry)
+        await _persist(session, dispatch, None, entry, recorded_at)
 
 
 async def _active_dispatch(session: AsyncSession, dispatch_id: int) -> Dispatch | None:
@@ -167,11 +191,105 @@ async def _active_dispatch(session: AsyncSession, dispatch_id: int) -> Dispatch 
     )
 
 
+def usage_artifact_statement(tenant_id: int, offset: int, limit: int) -> Any:
+    """按创建顺序分页列出本空间的用量产物。"""
+    return (
+        select(Artifact)
+        .where(
+            Artifact.tenant_id == tenant_id,
+            or_(
+                Artifact.name == USAGE_ARTIFACT,
+                Artifact.name.like("%/" + USAGE_ARTIFACT),
+            ),
+            Artifact.dispatch_id.is_not(None),
+        )
+        .order_by(Artifact.id.asc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+
+async def backfill_usage_artifacts(
+    session: AsyncSession,
+    storage: UsageObjectReader,
+    tenant_id: int,
+) -> UsageBackfillCounts:
+    """按 200 条一页回填用量产物。单条失败计入 failed，不中断本轮。"""
+    counts = UsageBackfillCounts()
+    offset = 0
+    while True:
+        found = await session.scalars(
+            usage_artifact_statement(tenant_id, offset, BACKFILL_BATCH_SIZE)
+        )
+        rows = list(found.all())
+        if len(rows) == 0:
+            break
+        for artifact in rows:
+            counts.scanned += 1
+            try:
+                await _backfill_artifact(session, storage, tenant_id, artifact, counts)
+            except Exception:
+                counts.failed += 1
+                logger.warning(
+                    "usage artifact backfill failed artifactId=%s ossRef=%s "
+                    "workitemId=%s dispatchId=%s",
+                    artifact.id,
+                    artifact.oss_ref,
+                    artifact.workitem_id,
+                    artifact.dispatch_id,
+                    exc_info=True,
+                )
+        if len(rows) < BACKFILL_BATCH_SIZE:
+            break
+        offset += BACKFILL_BATCH_SIZE
+    logger.info(
+        "usage artifact backfill finished tenantId=%s scanned=%s succeeded=%s "
+        "skipped=%s failed=%s",
+        tenant_id,
+        counts.scanned,
+        counts.succeeded,
+        counts.skipped,
+        counts.failed,
+    )
+    return counts
+
+
+async def _backfill_artifact(
+    session: AsyncSession,
+    storage: UsageObjectReader,
+    tenant_id: int,
+    artifact: Artifact,
+    counts: UsageBackfillCounts,
+) -> None:
+    content = storage.get(artifact.oss_ref)
+    if content is None:
+        counts.skipped += 1
+        return
+    if artifact.dispatch_id is None:
+        counts.skipped += 1
+        return
+    entries = _entries(content)
+    if len(entries) == 0:
+        counts.skipped += 1
+        return
+    dispatch = await _active_dispatch(session, artifact.dispatch_id)
+    if dispatch is None or dispatch.tenant_id != tenant_id:
+        counts.skipped += 1
+        return
+    usage_at = artifact.gmt_create
+    if usage_at is None:
+        usage_at = now_local()
+    for entry in entries:
+        await _persist(session, dispatch, artifact.id, entry, usage_at)
+    counts.succeeded += 1
+
+
 async def _persist(
     session: AsyncSession,
     dispatch: Dispatch,
     artifact_id: int | None,
     entry: dict[str, Any],
+    usage_at: datetime,
 ) -> None:
     provider = _name(entry.get("provider"))
     model = _name(entry.get("model"))
@@ -200,6 +318,7 @@ async def _persist(
             _credits(entry.get("credits")),
             total,
             entry,
+            usage_at,
         )
     )
     logger.info(

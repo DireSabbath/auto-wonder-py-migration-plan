@@ -1,10 +1,12 @@
-"""执行器任务用量上报。这些检查不连接 MySQL。"""
+"""执行器任务用量上报和产物回填。这些检查不连接 MySQL。"""
 
 import base64
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mysql
+from sqlalchemy.sql.elements import BindParameter
 
 from autowonder.aiusage.daemon_router import (
     TaskUsageEntry,
@@ -17,7 +19,14 @@ from autowonder.aiusage.daemon_router import (
     usage_entries,
     usage_http_response,
 )
-from autowonder.aiusage.dispatch_usage import ingest_usage_artifact, record_task_usage
+from autowonder.aiusage.dispatch_usage import (
+    BACKFILL_BATCH_SIZE,
+    backfill_usage_artifacts,
+    ingest_usage_artifact,
+    record_task_usage,
+    usage_artifact_statement,
+)
+from autowonder.artifacts.models import Artifact
 from autowonder.dispatch.models import Dispatch
 from autowonder.executors.models import Executor
 from autowonder.main import create_app
@@ -141,7 +150,7 @@ async def test_invalid_task_id_does_not_authenticate() -> None:
     )
     assert status == 400
     assert body == {"error": "invalid dispatch id"}
-    assert session.scalars == 0
+    assert session.scalar_calls == 0
     assert session.statements == []
     assert usage_http_response(status, body).status_code == 400
 
@@ -152,7 +161,7 @@ async def test_blank_or_bad_token_is_unauthorized() -> None:
     status, body = await report_task_usage(blank, "99", None, "   ", None, [{"provider": "codex"}])
     assert status == 401
     assert body is None
-    assert blank.scalars == 0
+    assert blank.scalar_calls == 0
     assert usage_http_response(status, body).body == b""
 
     session = await _ready()
@@ -349,10 +358,10 @@ class UsageSession(MemorySession):
     def __init__(self) -> None:
         super().__init__()
         self.statements: list[object] = []
-        self.scalars = 0
+        self.scalar_calls = 0
 
     async def scalar(self, statement: object) -> object:
-        self.scalars += 1
+        self.scalar_calls += 1
         return await MemorySession.scalar(self, statement)
 
     async def execute(self, statement: object) -> object:
@@ -388,6 +397,141 @@ def _dispatch_row(deleted: int) -> Dispatch:
 
 def _dispatch(session: UsageSession) -> Dispatch:
     return next(row for row in session.rows if isinstance(row, Dispatch))
+
+
+def test_usage_artifact_page_selects_named_rows() -> None:
+    """回填页按名称、非空调度、主键顺序分页。"""
+    statement = usage_artifact_statement(10, 200, BACKFILL_BATCH_SIZE)
+    compiled = statement.compile(dialect=mysql.dialect())
+    sql = str(compiled).lower()
+    assert "like" in sql
+    assert "dispatch_id is not null" in sql
+    assert "order by" in sql
+    assert "limit %s, %s" in sql
+    assert "observability/usage.json" in compiled.params.values()
+    assert "%/observability/usage.json" in compiled.params.values()
+
+
+async def test_repeated_backfill_reuses_the_same_usage_identity() -> None:
+    """两次回填写同一条身份，并沿用产物创建时间。"""
+    recorded = datetime(2026, 9, 1, 8, 0, 0)
+    session = UsageSession()
+    session.rows.append(_dispatch_row(0))
+    session.rows.append(_usage_artifact(77, "bucket/key", recorded))
+    content = (
+        b'{"usage":[{"provider":"codex","model":"gpt-5","input_tokens":1,'
+        b'"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":4}]}'
+    )
+    first = await backfill_usage_artifacts(session, _Map({"bucket/key": content}), 10)
+    second = await backfill_usage_artifacts(session, _Map({"bucket/key": content}), 10)
+    assert first.scanned == 1
+    assert first.succeeded == 1
+    assert first.skipped == 0
+    assert first.failed == 0
+    assert second.succeeded == 1
+    left = _values(session.statements[0])
+    right = _values(session.statements[1])
+    assert left["tenant_id"] == right["tenant_id"]
+    assert left["dispatch_id"] == right["dispatch_id"]
+    assert left["provider"] == right["provider"]
+    assert left["model"] == right["model"]
+    assert left["artifact_id"] == 77
+    assert right["artifact_id"] == 77
+    assert left["usage_at"] == recorded
+    assert left["total_tokens"] == 10
+
+
+async def test_missing_invalid_and_foreign_usage_artifacts_are_counted() -> None:
+    """对象缺失、坏 JSON、空数组和空间不一致分别计入跳过或失败。"""
+    recorded = datetime(2026, 9, 1, 8, 0, 0)
+    session = UsageSession()
+    session.rows.append(_usage_artifact(1, "missing", recorded))
+    session.rows.append(_usage_artifact(2, "bad", recorded))
+    session.rows.append(_usage_artifact(3, "empty", recorded))
+    storage = _Map({"bad": b"bad json", "empty": b'{"usage":[]}'})
+    counts = await backfill_usage_artifacts(session, storage, 10)
+    assert counts.scanned == 3
+    assert counts.skipped == 2
+    assert counts.failed == 1
+    assert counts.succeeded == 0
+    assert session.statements == []
+
+    foreign = UsageSession()
+    foreign.rows.append(_dispatch_row(0))
+    listed = _usage_artifact(4, "foreign", recorded)
+    listed.tenant_id = 11
+    foreign.rows.append(listed)
+    foreign_counts = await backfill_usage_artifacts(
+        foreign,
+        _Map({"foreign": b'{"usage":[{"provider":"codex","model":"gpt-5"}]}'}),
+        11,
+    )
+    assert foreign_counts.scanned == 1
+    assert foreign_counts.skipped == 1
+    assert foreign.statements == []
+
+
+async def test_full_page_requests_the_next_offset() -> None:
+    """满页之后用下一批偏移继续，短页结束。"""
+    recorded = datetime(2026, 9, 1, 8, 0, 0)
+    page = [
+        _usage_artifact(index, "bucket/missing", recorded) for index in range(BACKFILL_BATCH_SIZE)
+    ]
+    session = OffsetSession()
+    session.pages = [page, []]
+    counts = await backfill_usage_artifacts(session, _Map({}), 10)
+    assert session.offsets == [0, BACKFILL_BATCH_SIZE]
+    assert counts.scanned == BACKFILL_BATCH_SIZE
+    assert counts.skipped == BACKFILL_BATCH_SIZE
+    assert counts.succeeded == 0
+    assert counts.failed == 0
+
+
+class _Map:
+    def __init__(self, payloads: dict[str, bytes]) -> None:
+        self.payloads = payloads
+
+    def get(self, oss_ref: str) -> bytes | None:
+        return self.payloads.get(oss_ref)
+
+
+class _Page:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[object]:
+        return list(self._rows)
+
+
+class OffsetSession(UsageSession):
+    """按调用顺序交回预设页，并记下 SQL 偏移。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pages: list[list[object]] = []
+        self.offsets: list[object] = []
+
+    async def scalars(self, statement: object) -> object:
+        clause = getattr(statement, "_offset_clause", None)
+        offset = clause.value if isinstance(clause, BindParameter) else None
+        self.offsets.append(offset)
+        index = len(self.offsets) - 1
+        if index < len(self.pages):
+            return _Page(self.pages[index])
+        return _Page([])
+
+
+def _usage_artifact(artifact_id: int, oss_ref: str, created: datetime) -> Artifact:
+    return Artifact(
+        id=artifact_id,
+        tenant_id=10,
+        workitem_id=20,
+        dispatch_id=99,
+        name="observability/usage.json",
+        type="FILE",
+        oss_ref=oss_ref,
+        gmt_create=created,
+    )
 
 
 async def _ready() -> UsageSession:

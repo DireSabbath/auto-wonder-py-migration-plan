@@ -1,4 +1,4 @@
-"""``/api/insights``。查看要求只读，刷新人机协作数据要求读写。"""
+"""``/api/insights``。查看要求只读，回填用量和刷新人机协作数据要求读写。"""
 
 from datetime import date
 from typing import Annotated, Any
@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autowonder.aiusage.dispatch_usage import backfill_usage_artifacts
 from autowonder.api.access import WorkspaceAccessLevel, require_access
 from autowonder.core.context import current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
@@ -20,6 +21,7 @@ from autowonder.insights.service import (
     get_slow_tail,
     get_workers,
 )
+from autowonder.storage.objects import get_object_storage
 
 router = APIRouter(
     prefix="/api/insights",
@@ -78,6 +80,23 @@ async def audit(
 async def workers(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """有调度记录的数字员工。"""
     return ok(await get_workers(session, _workspace_id()))
+
+
+@router.post(
+    "/usage/backfill",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "回填AI用量数据"))],
+)
+async def backfill_usage(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """按当前空间回填已登记的用量产物。"""
+    counts = await backfill_usage_artifacts(session, get_object_storage(), _workspace_id())
+    return ok(
+        {
+            "scanned": counts.scanned,
+            "succeeded": counts.succeeded,
+            "skipped": counts.skipped,
+            "failed": counts.failed,
+        }
+    )
 
 
 @router.get("/human-agent-participation")

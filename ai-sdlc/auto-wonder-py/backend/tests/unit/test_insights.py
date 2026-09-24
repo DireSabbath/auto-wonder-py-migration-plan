@@ -293,7 +293,7 @@ def test_snapshot_document_roundtrip_and_version_mismatch() -> None:
 
 
 def test_insight_routes_match_java_and_require_login() -> None:
-    """洞察路径与 Java 一致。用量回填还没有存储实现，因此不注册。"""
+    """洞察路径与 Java 一致，用量回填要求登录。"""
     client = TestClient(create_app())
     paths = client.app.openapi()["paths"]
     assert "/api/insights/metrics" in paths
@@ -303,10 +303,13 @@ def test_insight_routes_match_java_and_require_login() -> None:
     assert "/api/insights/human-agent-participation/slowest" in paths
     assert "post" in paths["/api/insights/human-agent-participation/refresh"]
     assert "/api/insights/member-delivery" in paths
-    assert "/api/insights/usage/backfill" not in paths
+    assert "post" in paths["/api/insights/usage/backfill"]
     response = client.get("/api/insights/metrics")
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
     delivery = client.get("/api/insights/member-delivery")
     assert delivery.status_code == 401
     assert delivery.json()["code"] == "10401"
+    backfill = client.post("/api/insights/usage/backfill")
+    assert backfill.status_code == 401
+    assert backfill.json()["code"] == "10401"
