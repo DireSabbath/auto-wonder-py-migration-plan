@@ -1,4 +1,4 @@
-"""验证命令：smoke、authchain、logscan、dispatch-e2e、pages、squad-flow 与 parity。"""
+"""验证命令：smoke、authchain、logscan、dispatch-e2e、pages、squad-flow、mcp 与 parity。"""
 
 import argparse
 import json
@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.squad_flow import squad_flow
 
         verdict = squad_flow(args.base_url)
+    elif args.command == "mcp":
+        from verify.mcp_flow import mcp_flow
+
+        verdict = mcp_flow(args.base_url)
     elif args.command == "parity":
         from verify.parity import parity
 
