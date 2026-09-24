@@ -32,6 +32,20 @@ from tests.unit.test_workitems import MemorySession
 _SECRET = "test-secret-test-secret-test-secret-test-secret"
 
 
+def test_personal_token_routes_precede_the_path_token_rpc() -> None:
+    """``/api/mcp/tokens`` 先于 ``/{path_token}`` 注册，签发不会走进 JSON-RPC。"""
+    client = TestClient(create_app())
+    posted: list[str] = []
+    for route in client.app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if path is None or methods is None or "POST" not in methods:
+            continue
+        if path in {"/api/mcp/tokens", "/api/mcp/{path_token}"}:
+            posted.append(path)
+    assert posted.index("/api/mcp/tokens") < posted.index("/api/mcp/{path_token}")
+
+
 def test_mcp_token_routes_require_login_and_skip_workspace_access() -> None:
     """个人令牌路径要登录，不挂工作空间访问级别。"""
     client = TestClient(create_app())

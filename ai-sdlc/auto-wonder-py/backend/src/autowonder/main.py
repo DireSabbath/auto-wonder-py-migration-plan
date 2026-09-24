@@ -127,8 +127,9 @@ def create_app() -> FastAPI:
     app.include_router(clarification_router)
     app.include_router(workitem_router)
     app.include_router(memory_router)
-    app.include_router(mcp_protocol_router)
+    # 固定路径 /api/mcp/tokens 必须先于 /{pathToken}，否则 tokens 会被当成路径令牌。
     app.include_router(mcp_token_router)
+    app.include_router(mcp_protocol_router)
     app.include_router(notification_router)
     app.include_router(dashboard_router)
     app.include_router(audit_router)
