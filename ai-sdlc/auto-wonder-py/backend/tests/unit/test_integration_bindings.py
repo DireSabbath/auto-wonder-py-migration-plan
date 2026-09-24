@@ -104,6 +104,61 @@ def test_aone_disabled_still_rejects_remote_calls() -> None:
         require_enabled()
 
 
+def test_create_comment_uses_okhttp_form_charset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """评论表单带上 OkHttp 补的 charset，正文仍按百分号编码。"""
+    from autowonder.config import get_settings
+    from autowonder.integrations.aone_api import AoneClient, AoneConfig, create_comment
+
+    monkeypatch.setenv("AUTOWONDER_AONE_ENABLED", "true")
+    get_settings.cache_clear()
+    seen: dict[str, object] = {}
+
+    def request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        content: str,
+        timeout: object,
+    ) -> object:
+        seen["method"] = method
+        seen["url"] = url
+        seen["content_type"] = headers["Content-Type"]
+        seen["body"] = content
+
+        class _Response:
+            status_code = 200
+            text = '{"success":true,"result":{"id":88001}}'
+
+            def json(self) -> dict[str, object]:
+                return {"success": True, "result": {"id": 88001}}
+
+        return _Response()
+
+    monkeypatch.setattr("autowonder.integrations.aone_api.httpx.request", request)
+    try:
+        create_comment(
+            AoneClient(),
+            AoneConfig(
+                "http://aone.test",
+                "aw-outbox",
+                base64.b64encode(b"0123456789abcdef").decode(),
+                "1",
+            ),
+            "WI-outbox",
+            "staff-1",
+            "outbox & 中文 = line",
+        )
+    finally:
+        get_settings.cache_clear()
+    assert seen["method"] == "POST"
+    assert seen["url"] == "http://aone.test/issue/openapi/IssueTopService/createComment"
+    assert seen["content_type"] == "application/x-www-form-urlencoded; charset=utf-8"
+    assert seen["body"] == (
+        "targetType=Issue&targetId=WI-outbox&user=staff-1"
+        "&content=outbox+%26+%E4%B8%AD%E6%96%87+%3D+line"
+    )
+
+
 def test_aone_signature_and_query() -> None:
     """签名去掉填充，表单跳过空值并把空格写成加号。"""
     secret = base64.b64encode(b"0123456789abcdef").decode()

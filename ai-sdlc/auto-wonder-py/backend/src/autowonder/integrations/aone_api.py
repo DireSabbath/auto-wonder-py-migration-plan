@@ -187,7 +187,8 @@ class AoneClient:
         signature = sign_aone(config.client_key, config.access_secret, timestamp)
         url = config.base_url + path
         headers = _headers(config, timestamp, signature)
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        # OkHttp 的 RequestBody.create(String, FORM) 会在未声明字符集时补上 utf-8。
+        headers["Content-Type"] = "application/x-www-form-urlencoded; charset=utf-8"
         return self._execute("POST", url, headers, to_url_encoded_query(form), path)
 
     def _execute(
