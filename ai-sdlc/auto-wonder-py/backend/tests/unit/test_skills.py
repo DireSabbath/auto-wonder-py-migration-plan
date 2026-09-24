@@ -221,7 +221,12 @@ def test_skill_routes_match_java_and_require_login() -> None:
     assert "/api/skills/{id}" in paths
     assert "/api/skills/{id}/category" in paths
     assert "/api/skills/category/batch" in paths
-    assert "/api/skills/package" not in paths
+    assert "/api/skills/package" in paths
+    assert "/api/skills/package/inspect" in paths
+    assert "/api/skills/{id}/package" in paths
+    assert "/api/skills/{id}/package/files" in paths
+    assert "/api/skills/{id}/package/file" in paths
+    assert "/api/skills/{id}/package/download" in paths
     assert "/api/skills/{id}/connection-test" not in paths
     response = client.get("/api/skills")
     assert response.status_code == 401

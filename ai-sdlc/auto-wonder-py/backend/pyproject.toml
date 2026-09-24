@@ -118,4 +118,5 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
+    "types-pyyaml>=6.0",
 ]
