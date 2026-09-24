@@ -1,4 +1,4 @@
-"""工单事件时间线和统一时间线。外部协作快照尚未接入。"""
+"""工单事件时间线和统一时间线。Aone 同步事件带来源链接。"""
 
 import json
 from datetime import datetime
@@ -8,6 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.debuglogs.sanitizer import java_is_blank
+from autowonder.workitems.collaboration import (
+    find_collaboration,
+    principal_compact_display_name,
+    principal_display_name,
+)
 from autowonder.workitems.models import Workitem, WorkitemComment, WorkitemEvent
 from autowonder.workitems.schemas import EventView, TimelineItemView
 from autowonder.workitems.service import _actor_name
@@ -72,6 +77,7 @@ async def unified_timeline(session: AsyncSession, workitem_id: int) -> list[Time
     )
     if owner is None or owner.tenant_id is None:
         raise BizError(ErrorCode.WORKITEM_NOT_FOUND)
+    collaboration = await find_collaboration(session, owner.tenant_id, workitem_id)
     items: list[TimelineItemView] = []
     comments = await session.scalars(
         select(WorkitemComment).where(
@@ -99,9 +105,14 @@ async def unified_timeline(session: AsyncSession, workitem_id: int) -> list[Time
     for event in events.all():
         from_val = await _value_display(session, event, event.from_val, "fromType")
         to_val = await _value_display(session, event, event.to_val, "toType")
-        content = await _append_operator(
-            session, _format_content(event, from_val, to_val), event
-        )
+        content = await _append_operator(session, _format_content(event, from_val, to_val), event)
+        source_provider = None
+        source_external_workitem_id = None
+        source_external_url = None
+        if event.event_type in {"AONE_IMPORT", "AONE_UPDATE"} and collaboration is not None:
+            source_provider = collaboration.provider
+            source_external_workitem_id = collaboration.external_workitem_id
+            source_external_url = collaboration.external_url
         items.append(
             TimelineItemView(
                 id=event.id,
@@ -112,6 +123,9 @@ async def unified_timeline(session: AsyncSession, workitem_id: int) -> list[Time
                 gmt_create=event.gmt_create,
                 author_name=await _display(session, event.actor_type, event.actor_ref),
                 content=content,
+                source_provider=source_provider,
+                source_external_workitem_id=source_external_workitem_id,
+                source_external_url=source_external_url,
             )
         )
     items.sort(key=lambda item: item.id or 0, reverse=True)
@@ -134,9 +148,7 @@ def _format_content(event: WorkitemEvent, from_val: str | None, to_val: str | No
     return label
 
 
-async def _append_operator(
-    session: AsyncSession, content: str, event: WorkitemEvent
-) -> str:
+async def _append_operator(session: AsyncSession, content: str, event: WorkitemEvent) -> str:
     operator = await _operator(session, event)
     if operator is None:
         return content
@@ -159,6 +171,8 @@ async def _operator(session: AsyncSession, event: WorkitemEvent) -> str | None:
 async def _display(
     session: AsyncSession, actor_type: str | None, actor_ref: int | None
 ) -> str | None:
+    if actor_type == "EXTERNAL":
+        return await principal_display_name(session, actor_ref)
     name = await _actor_name(session, actor_type, actor_ref)
     if actor_ref is None:
         return name
@@ -179,7 +193,10 @@ async def _value_display(
     except ValueError:
         return value
     if event.event_type == "EXTERNAL_BUSINESS_OWNER_CHANGE":
-        return value
+        display = await principal_compact_display_name(session, ref)
+        if display is None:
+            return value
+        return display
     explicit = _detail_type(event.detail_json, type_key)
     if explicit is not None:
         display = await _display(session, explicit, ref)

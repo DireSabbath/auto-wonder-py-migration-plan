@@ -24,6 +24,11 @@ from autowonder.sdlcs.models import Sdlc, SdlcStep
 from autowonder.squads.models import SquadMember
 from autowonder.statemachines.models import StatusNode, StatusTemplate, StatusTransition
 from autowonder.users.models import User
+from autowonder.workitems.collaboration import (
+    find_collaboration,
+    principal_name,
+    source_creators,
+)
 from autowonder.workitems.events import (
     WorkitemAssigned,
     WorkitemContentUpdated,
@@ -781,6 +786,7 @@ async def _decorate_page(
     sdlcs = await _sdlcs_by_ids(session, sdlc_ids)
     latest = await _latest_by_workitem(session, tenant_id, workitem_ids)
     links = await _links_by_workitem(session, tenant_id, workitem_ids)
+    creators = await source_creators(session, links)
     dispatches = await _dispatches_by_workitem(session, tenant_id, workitem_ids)
     now = now_local()
     now_ms = shanghai_millis(now)
@@ -824,6 +830,7 @@ async def _decorate_page(
                 stuck_threshold_ms=stuck,
                 include_runtime=True,
                 origin=None,
+                source_creator=creators.get(workitem.id),
             )
         )
     return views
@@ -906,6 +913,9 @@ async def _render_detail(session: AsyncSession, workitem: Workitem) -> WorkitemV
     if workitem.tenant_id is not None:
         links = await _links_for(session, workitem.tenant_id, workitem.id)
         dispatches = await _dispatches_for(session, workitem.tenant_id, workitem.id)
+    collaboration = None
+    if workitem.tenant_id is not None:
+        collaboration = await find_collaboration(session, workitem.tenant_id, workitem.id)
     now = now_local()
     return render_workitem(
         workitem,
@@ -925,6 +935,7 @@ async def _render_detail(session: AsyncSession, workitem: Workitem) -> WorkitemV
         stuck_threshold_ms=get_settings().workitem_stuck_threshold_ms,
         include_runtime=False,
         origin=await _origin(session, workitem),
+        external_collaboration=collaboration,
     )
 
 
@@ -1164,6 +1175,8 @@ async def _actor_name(
         if user is None:
             return None
         return person_name(user.nickname, user.username)
+    if actor_type == "EXTERNAL":
+        return await principal_name(session, ref)
     return None
 
 

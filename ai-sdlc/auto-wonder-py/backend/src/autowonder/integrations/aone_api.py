@@ -88,6 +88,23 @@ class ExternalStatusOption:
 
 
 @dataclass
+class ExternalPrincipalRef:
+    """来源侧身份。工号为空时不建主体。"""
+
+    subject_id: str
+    display_name: str | None = None
+
+
+@dataclass
+class ExternalPrincipalRelation:
+    """一组来源侧参与关系，同一工号只保留第一次出现。"""
+
+    source_key: str
+    display_name: str | None
+    principals: list[ExternalPrincipalRef]
+
+
+@dataclass
 class ExternalWorkitemDetail:
     """搜索或详情接口映射出的工单。"""
 
@@ -102,6 +119,9 @@ class ExternalWorkitemDetail:
     priority: int | None = None
     external_url: str | None = None
     source_lifecycle: str = "ACTIVE"
+    reporter: ExternalPrincipalRef | None = None
+    business_owner: ExternalPrincipalRef | None = None
+    principal_relations: list[ExternalPrincipalRelation] = field(default_factory=list)
     updated_at: datetime | None = None
     created_at: datetime | None = None
     raw_json: str | None = None
@@ -494,6 +514,8 @@ def to_detail(issue: dict[str, object]) -> ExternalWorkitemDetail:
     work_type = _work_type(_str(issue, "stamp"))
     external_id = _str(issue, "id")
     project_id = _str(issue, "akProjectId")
+    author_staff_id = _first(_str(issue, "userStaffId"), _str(issue, "author"))
+    assignee_staff_id = _first(_str(issue, "assignedToStaffId"), _str(issue, "assignToStaffId"))
     return ExternalWorkitemDetail(
         external_id=external_id,
         external_project_id=project_id,
@@ -510,6 +532,24 @@ def to_detail(issue: dict[str, object]) -> ExternalWorkitemDetail:
             _web_url(project_id, work_type, external_id),
         ),
         source_lifecycle=_lifecycle(issue),
+        reporter=_user_ref(
+            author_staff_id,
+            _first(
+                _str(issue, "userName"),
+                _str(issue, "user"),
+                _str(issue, "authorName"),
+                _str(issue, "creatorName"),
+            ),
+        ),
+        business_owner=_user_ref(
+            assignee_staff_id,
+            _first(
+                _str(issue, "assignedTo"),
+                _str(issue, "assignedToName"),
+                _str(issue, "assigneeName"),
+            ),
+        ),
+        principal_relations=_principal_relations(issue),
         updated_at=_date(
             _first(
                 _str(issue, "modifiedAt"),
@@ -682,27 +722,118 @@ def _to_member(obj: dict[str, object], role_name: str | None) -> ExternalProject
     )
 
 
-def _work_type(stamp: str | None) -> str | None:
+def _work_type(stamp: str | None) -> str:
+    """未知或空的 stamp 按任务处理。"""
     if stamp is None:
-        return None
+        return "TASK"
     lowered = stamp.lower()
     if lowered == "req":
         return "REQ"
     if lowered == "bug":
         return "BUG"
-    if lowered == "task":
-        return "TASK"
+    return "TASK"
+
+
+def _priority(priority_id: str | None, priority_name: str | None) -> int:
+    """94/Urgent 为 0，95/High 为 1，97/Low 为 3，其余为 2。"""
+    if priority_id == "94":
+        return 0
+    if _same_text(priority_name, "Urgent"):
+        return 0
+    if priority_id == "95":
+        return 1
+    if _same_text(priority_name, "High"):
+        return 1
+    if priority_id == "97":
+        return 3
+    if _same_text(priority_name, "Low"):
+        return 3
+    return 2
+
+
+def _same_text(value: str | None, expected: str) -> bool:
+    if value is None:
+        return False
+    return value.lower() == expected.lower()
+
+
+def _user_ref(subject_id: str | None, display_name: str | None) -> ExternalPrincipalRef | None:
+    if subject_id is None or subject_id.strip() == "":
+        return None
+    return ExternalPrincipalRef(subject_id, display_name)
+
+
+def _principal_relations(issue: dict[str, object]) -> list[ExternalPrincipalRelation]:
+    relations: list[ExternalPrincipalRelation] = []
+    participants = _relation(
+        issue,
+        "participants",
+        "参与者",
+        ("participants", "participantList", "involvedUserList", "participantStaffIds"),
+    )
+    if participants is not None:
+        relations.append(participants)
+    watchers = _relation(
+        issue,
+        "watchers",
+        "关注者",
+        ("watchers", "watcherList", "subscriberList", "trackerStaffIds", "trackers"),
+    )
+    if watchers is not None:
+        relations.append(watchers)
+    return relations
+
+
+def _relation(
+    issue: dict[str, object],
+    source_key: str,
+    display_name: str,
+    source_fields: tuple[str, ...],
+) -> ExternalPrincipalRelation | None:
+    source = _first_list(issue, source_fields)
+    if source is None or len(source) == 0:
+        return None
+    principals: list[ExternalPrincipalRef] = []
+    seen: set[str] = set()
+    for item in source:
+        principal = _principal_from_item(item)
+        if principal is None or principal.subject_id in seen:
+            continue
+        seen.add(principal.subject_id)
+        principals.append(principal)
+    if len(principals) == 0:
+        return None
+    return ExternalPrincipalRelation(source_key, display_name, principals)
+
+
+def _first_list(issue: dict[str, object], source_fields: tuple[str, ...]) -> list[object] | None:
+    for source_field in source_fields:
+        value = issue.get(source_field)
+        if isinstance(value, list):
+            return value
     return None
 
 
-def _priority(priority_id: str | None, priority: str | None) -> int | None:
-    raw = priority_id if priority_id is not None and priority_id.strip() != "" else priority
-    if raw is None or raw.strip() == "":
+def _principal_from_item(item: object) -> ExternalPrincipalRef | None:
+    if isinstance(item, dict):
+        return _user_ref(
+            _first(_str(item, "staffId"), _str(item, "userStaffId"), _str(item, "id")),
+            _first(
+                _str(item, "name"),
+                _str(item, "userName"),
+                _str(item, "nickName"),
+                _str(item, "displayName"),
+            ),
+        )
+    if isinstance(item, bool):
         return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+    if isinstance(item, int):
+        return _user_ref(str(item), None)
+    if isinstance(item, float):
+        return _user_ref(str(item), None)
+    if isinstance(item, str):
+        return _user_ref(item, None)
+    return None
 
 
 def _lifecycle(issue: dict[str, object]) -> str:
@@ -723,8 +854,12 @@ def _web_url(project_id: str | None, work_type: str | None, external_id: str | N
         or external_id.strip() == ""
     ):
         return None
-    kind = "req" if work_type == "REQ" else "issue"
-    return base + "/" + kind + "/" + project_id + "/" + external_id
+    kind = "task"
+    if work_type == "REQ":
+        kind = "req"
+    elif work_type == "BUG":
+        kind = "bug"
+    return base + "/v2/project/" + project_id + "/" + kind + "/" + external_id
 
 
 def _date(value: str | None) -> datetime | None:

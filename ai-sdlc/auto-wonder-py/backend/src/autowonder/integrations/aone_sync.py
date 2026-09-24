@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import object_session
 
 from autowonder.core.clock import SHANGHAI, now_local
 from autowonder.db.rows import rowcount
@@ -16,6 +17,8 @@ from autowonder.integrations.aone_api import (
     AoneClient,
     AoneConfig,
     ExternalComment,
+    ExternalPrincipalRef,
+    ExternalPrincipalRelation,
     ExternalWorkitemDetail,
     get_workitem,
     list_comments,
@@ -50,6 +53,13 @@ class _Upsert:
     workitem_id: int
     created: bool
     updated: bool
+
+
+@dataclass
+class _Identity:
+    reporter_principal_id: int | None
+    business_owner_principal_id: int | None
+    principal_relations_json: list[dict[str, object]] | None
 
 
 async def sync_issue_ids(
@@ -690,6 +700,106 @@ async def _find_comment_link(
     )
 
 
+async def _resolve_identity(session: AsyncSession, detail: ExternalWorkitemDetail) -> _Identity:
+    """把提出者、业务负责人和参与关系收成主体 id。没有关系时不写空数组。"""
+    reporter_id = await _ref_id(session, detail.reporter)
+    owner_id = await _ref_id(session, detail.business_owner)
+    relations: list[dict[str, object]] = []
+    for relation in detail.principal_relations:
+        snapshot = await _resolve_relation(session, relation)
+        if snapshot is not None:
+            relations.append(snapshot)
+    stored = None
+    if len(relations) > 0:
+        stored = relations
+    return _Identity(reporter_id, owner_id, stored)
+
+
+async def _ref_id(session: AsyncSession, ref: ExternalPrincipalRef | None) -> int | None:
+    if ref is None or ref.subject_id.strip() == "":
+        return None
+    return await _upsert_principal(session, PROVIDER, ref.subject_id, ref.display_name)
+
+
+async def _resolve_relation(
+    session: AsyncSession, relation: ExternalPrincipalRelation
+) -> dict[str, object] | None:
+    if relation.source_key.strip() == "":
+        return None
+    principal_ids: list[int] = []
+    seen: set[int] = set()
+    for principal in relation.principals:
+        principal_id = await _ref_id(session, principal)
+        if principal_id is None or principal_id in seen:
+            continue
+        seen.add(principal_id)
+        principal_ids.append(principal_id)
+    if len(principal_ids) == 0:
+        return None
+    snapshot: dict[str, object] = {
+        "source_key": relation.source_key,
+        "principal_ids": principal_ids,
+    }
+    if relation.display_name is not None:
+        snapshot["display_name"] = relation.display_name
+    return snapshot
+
+
+def _apply_snapshot(
+    link: ExternalWorkitemLink,
+    detail: ExternalWorkitemDetail,
+    identity: _Identity,
+    digest: str,
+) -> None:
+    lifecycle = detail.source_lifecycle
+    if lifecycle.strip() == "":
+        lifecycle = "ACTIVE"
+    link.external_url = detail.external_url
+    link.source_status_id = detail.status_id
+    link.source_status_name = detail.status_name
+    link.source_lifecycle = lifecycle
+    link.reporter_principal_id = identity.reporter_principal_id
+    link.business_owner_principal_id = identity.business_owner_principal_id
+    link.principal_relations_json = identity.principal_relations_json
+    link.remote_updated_at = detail.updated_at
+    link.remote_version_hash = digest
+    link.last_sync_direction = "INBOUND"
+    link.last_sync_at = now_local()
+    link.sync_status = "HEALTHY"
+    link.last_error_code = None
+    link.last_error = None
+
+
+def _id_text(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+async def _soft_delete_workitem(
+    session: AsyncSession, workitem: Workitem, tenant_id: int, user_id: int
+) -> None:
+    """并发插入输掉的本地工单按版本软删，避免留下没有外部链接的孤儿。"""
+    await session.execute(
+        update(Workitem)
+        .where(
+            Workitem.id == workitem.id,
+            Workitem.tenant_id == tenant_id,
+            Workitem.version == workitem.version,
+            Workitem.is_deleted == 0,
+        )
+        .values(
+            is_deleted=1,
+            version=Workitem.version + 1,
+            modifier_id=user_id,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    workitem.is_deleted = 1
+    workitem.version = workitem.version + 1
+    workitem.modifier_id = user_id
+
+
 async def _upsert(
     session: AsyncSession,
     binding: ExternalProjectBinding,
@@ -710,6 +820,7 @@ async def _create(
     digest: str,
     user_id: int,
 ) -> _Upsert:
+    identity = await _resolve_identity(session, detail)
     node = await ensure_status(session, binding, detail, [], user_id)
     workitem = Workitem(
         tenant_id=binding.tenant_id,
@@ -744,21 +855,15 @@ async def _create(
         external_workitem_id=detail.external_id or "",
         external_work_type=detail.work_type,
         workitem_id=workitem.id,
-        external_url=detail.external_url,
-        source_status_id=detail.status_id,
-        source_status_name=detail.status_name,
-        source_lifecycle=detail.source_lifecycle,
-        remote_updated_at=detail.updated_at,
-        remote_version_hash=digest,
-        last_sync_direction="INBOUND",
-        last_sync_at=now_local(),
-        sync_status="HEALTHY",
     )
-    session.add(link)
+    _apply_snapshot(link, detail, identity, digest)
     try:
         async with session.begin_nested():
+            session.add(link)
             await session.flush()
     except IntegrityError:
+        if object_session(link) is not None:
+            session.expunge(link)
         raced = await _find_link(session, binding, detail.external_id or "")
         if raced is None:
             raise
@@ -767,6 +872,7 @@ async def _create(
             binding.id,
             detail.external_id,
         )
+        await _soft_delete_workitem(session, workitem, binding.tenant_id, user_id)
         return await _update_existing(session, binding, detail, raced, digest, user_id)
     return _Upsert(workitem.id, True, False)
 
@@ -789,6 +895,7 @@ async def _update_existing(
         and detail.updated_at < link.remote_updated_at
     ):
         return _Upsert(link.workitem_id, False, False)
+    identity = await _resolve_identity(session, detail)
     existing = await session.get(Workitem, link.workitem_id)
     updated = False
     if existing is not None and existing.assignee_type == "EXTERNAL":
@@ -866,16 +973,30 @@ async def _update_existing(
                 user_id,
             )
             updated = True
-    link.source_status_id = detail.status_id
-    link.source_status_name = detail.status_name
-    link.source_lifecycle = detail.source_lifecycle
-    link.external_url = detail.external_url
-    link.remote_updated_at = detail.updated_at
-    link.remote_version_hash = digest
-    link.last_sync_direction = "INBOUND"
-    link.last_sync_at = now_local()
-    link.sync_status = "HEALTHY"
+    previous_owner = link.business_owner_principal_id
+    previous_lifecycle = link.source_lifecycle
+    _apply_snapshot(link, detail, identity, digest)
     await session.flush()
+    if previous_owner != identity.business_owner_principal_id:
+        await _event(
+            session,
+            binding.tenant_id,
+            link.workitem_id,
+            "EXTERNAL_BUSINESS_OWNER_CHANGE",
+            _id_text(previous_owner),
+            _id_text(identity.business_owner_principal_id),
+            user_id,
+        )
+    if previous_lifecycle is not None and previous_lifecycle != link.source_lifecycle:
+        await _event(
+            session,
+            binding.tenant_id,
+            link.workitem_id,
+            "EXTERNAL_LIFECYCLE_CHANGE",
+            previous_lifecycle,
+            link.source_lifecycle,
+            user_id,
+        )
     return _Upsert(link.workitem_id, False, updated)
 
 
