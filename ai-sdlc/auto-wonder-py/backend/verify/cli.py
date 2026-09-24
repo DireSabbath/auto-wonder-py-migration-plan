@@ -67,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         from verify.outbox_flow import outbox_flow
 
         verdict = outbox_flow(args.base_url)
+    elif args.command == "outbox-dual":
+        from verify.outbox_dual import outbox_dual
+
+        verdict = outbox_dual(args.base_url, args.java_url)
     elif args.command == "presign":
         from verify.presign_flow import presign_flow
 
