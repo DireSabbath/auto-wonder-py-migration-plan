@@ -1,0 +1,155 @@
+"""Daemon 上传鉴权。调度不存在或执行器令牌不对时拒绝。"""
+
+import logging
+from dataclasses import dataclass
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from autowonder.dispatch.models import Dispatch, DispatchRecovery
+from autowonder.dispatch.query import execution_source_type
+from autowonder.executors.models import Executor
+from autowonder.executors.tokens import validate
+from autowonder.workitems.models import WorkitemExecutionControl
+
+logger = logging.getLogger(__name__)
+
+_INTERACTION_MODES = frozenset(
+    {"COMMENT_INTERACTION", "SIDE_INTERACTION", "CANONICAL_INTERACTION"}
+)
+
+
+@dataclass
+class UploadAuth:
+    """一次 daemon 上传的身份。失败时数值字段保持 0。"""
+
+    success: bool
+    tenant_id: int
+    workitem_id: int
+    agent_id: int
+    resume_mode: str | None
+    source_type: str
+
+    def interaction(self) -> bool:
+        """评论、旁路和规范交互都属于交互调度。"""
+        if self.resume_mode is None:
+            return False
+        return self.resume_mode.upper() in _INTERACTION_MODES
+
+
+def authenticate_loaded(
+    dispatch: Dispatch | None,
+    executor: Executor | None,
+    token: str | None,
+) -> UploadAuth:
+    """用已经读出的调度和执行器完成与 Java 相同的校验。"""
+    if dispatch is None or executor is None or not validate(executor.token_ref, token):
+        return UploadAuth(False, 0, 0, 0, None, "WORKITEM")
+    return UploadAuth(
+        True,
+        dispatch.tenant_id,
+        dispatch.workitem_id,
+        dispatch.agent_id,
+        dispatch.resume_mode,
+        execution_source_type(dispatch.source_type),
+    )
+
+
+def mutation_fenced(
+    dispatch: Dispatch | None,
+    cancel_requested: bool,
+    workitem_closed: bool,
+) -> bool:
+    """取消、已请求停止，或工单已关闭时，不能再写业务产物。
+
+    检查点上传不走这道栅栏。调用方传入停止标记和工单是否关闭。
+    """
+    if dispatch is None or dispatch.status == "CANCELED" or cancel_requested:
+        return True
+    return execution_source_type(dispatch.source_type) == "WORKITEM" and workitem_closed
+
+
+async def load_mutation_fence(session: AsyncSession, dispatch_id: int) -> bool:
+    """取消请求、调度已取消，或工单交付已关闭时，业务产物不能再写。"""
+    dispatch = await session.scalar(
+        select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.is_deleted == 0).limit(1)
+    )
+    cancel_requested = False
+    workitem_closed = False
+    if dispatch is not None:
+        recovery = await session.scalar(
+            select(DispatchRecovery)
+            .where(
+                DispatchRecovery.tenant_id == dispatch.tenant_id,
+                DispatchRecovery.dispatch_id == dispatch.id,
+                DispatchRecovery.cancel_requested == 1,
+            )
+            .limit(1)
+        )
+        cancel_requested = recovery is not None
+        if execution_source_type(dispatch.source_type) == "WORKITEM":
+            control = await session.scalar(
+                select(WorkitemExecutionControl)
+                .where(
+                    WorkitemExecutionControl.tenant_id == dispatch.tenant_id,
+                    WorkitemExecutionControl.workitem_id == dispatch.workitem_id,
+                    WorkitemExecutionControl.closed == 1,
+                )
+                .limit(1)
+            )
+            workitem_closed = control is not None
+    return mutation_fenced(dispatch, cancel_requested, workitem_closed)
+
+
+@dataclass
+class DetailedUploadAuth:
+    """调试日志签发要区分调度不存在和令牌无效。"""
+
+    status: str
+    dispatch: Dispatch | None
+
+
+async def authenticate_detailed(
+    session: AsyncSession,
+    dispatch_id: int,
+    token: str | None,
+) -> DetailedUploadAuth:
+    """与普通上传同一条校验链，但 404 和 403 分开返回。"""
+    dispatch = await _load_dispatch(session, dispatch_id)
+    if dispatch is None:
+        logger.info(
+            "detailed upload auth failed dispatchId=%s reason=dispatch_not_found",
+            dispatch_id,
+        )
+        return DetailedUploadAuth("DISPATCH_NOT_FOUND", None)
+    executor = await _load_executor(session, dispatch)
+    if executor is None or not validate(executor.token_ref, token):
+        logger.info(
+            "detailed upload auth failed dispatchId=%s reason=executor_or_token_invalid",
+            dispatch_id,
+        )
+        return DetailedUploadAuth("TOKEN_INVALID", dispatch)
+    return DetailedUploadAuth("OK", dispatch)
+
+
+async def authenticate(session: AsyncSession, dispatch_id: int, token: str | None) -> UploadAuth:
+    """按调度找到执行器，再校验上传令牌。"""
+    dispatch = await _load_dispatch(session, dispatch_id)
+    executor = await _load_executor(session, dispatch)
+    return authenticate_loaded(dispatch, executor, token)
+
+
+async def _load_dispatch(session: AsyncSession, dispatch_id: int) -> Dispatch | None:
+    return await session.scalar(
+        select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.is_deleted == 0).limit(1)
+    )
+
+
+async def _load_executor(session: AsyncSession, dispatch: Dispatch | None) -> Executor | None:
+    if dispatch is None or dispatch.executor_id is None:
+        return None
+    return await session.scalar(
+        select(Executor)
+        .where(Executor.id == dispatch.executor_id, Executor.is_deleted == 0)
+        .limit(1)
+    )

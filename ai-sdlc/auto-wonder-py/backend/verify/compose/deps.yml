@@ -1,0 +1,28 @@
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: autowonder
+      MYSQL_DATABASE: autowonder
+      TZ: Asia/Shanghai
+    ports:
+      - "33061:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - ../initdb:/docker-entrypoint-initdb.d
+  redis:
+    image: redis:7
+    ports:
+      - "63791:6379"
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: autowonder
+      MINIO_ROOT_PASSWORD: autowonder-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
