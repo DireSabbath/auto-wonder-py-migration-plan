@@ -183,6 +183,29 @@ async def mark_cancel_intent(session: AsyncSession, run: ScheduledTaskRun, user_
     return True
 
 
+async def complete_cancel_if_quiescent(
+    session: AsyncSession,
+    tenant_id: int,
+    source_type: str | None,
+    run_id: int | None,
+) -> None:
+    """取消意图已写下，且这次运行的派发都已结束或暂停时，把运行收成 CANCELED。"""
+    if source_type != "SCHEDULED_TASK_RUN" or run_id is None:
+        return
+    run = await session.scalar(
+        select(ScheduledTaskRun)
+        .where(ScheduledTaskRun.workspace_id == tenant_id, ScheduledTaskRun.id == run_id)
+        .limit(1)
+    )
+    if run is None or run.error != "CANCEL_PENDING":
+        return
+    for dispatch in await _dispatches(session, tenant_id, run_id):
+        if dispatch.status not in DISPATCH_TERMINAL and dispatch.status != "PAUSED":
+            return
+    await _finish(session, run, "CANCELED", None, "CANCELED", 0)
+    await session.commit()
+
+
 async def pause_active(
     session: AsyncSession,
     workspace_id: int,

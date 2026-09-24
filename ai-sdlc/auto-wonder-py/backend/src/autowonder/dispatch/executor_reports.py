@@ -1,4 +1,4 @@
-"""执行器上报的忙、暂停成功和暂停失败。"""
+"""执行器上报的忙、暂停成功、暂停失败，以及暂停与成功结果的竞争。"""
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,7 +60,31 @@ async def on_paused(
         return True
     if dispatch.status != "PAUSING" or not durable:
         return False
-    return await _move(session, dispatch, "PAUSED", None)
+    moved = await _move(session, dispatch, "PAUSED", None)
+    if moved:
+        await _finish_scheduled_cancel(session, dispatch)
+    return moved
+
+
+async def on_completed_while_pausing(
+    session: AsyncSession,
+    tenant_id: int,
+    executor_id: int,
+    dispatch_id: int,
+    durable: bool,
+) -> str:
+    """成功结果撞上暂停时，暂停优先，检查点成为暂停边界。"""
+    dispatch = await _owned(session, tenant_id, executor_id, dispatch_id)
+    if dispatch is None:
+        return "REJECTED"
+    if dispatch.status != "PAUSING" and dispatch.status != "PAUSE_FAILED":
+        return "NOT_PAUSING"
+    if not durable:
+        return "REJECTED"
+    if not await _move(session, dispatch, "PAUSED", None):
+        return "REJECTED"
+    await _finish_scheduled_cancel(session, dispatch)
+    return "PAUSED"
 
 
 async def on_pause_failed(
@@ -75,6 +99,17 @@ async def on_pause_failed(
     if dispatch is None or dispatch.status != "PAUSING":
         return False
     return await _move(session, dispatch, "PAUSE_FAILED", error)
+
+
+async def _finish_scheduled_cancel(session: AsyncSession, dispatch: Dispatch) -> None:
+    from autowonder.scheduledtasks.runs import complete_cancel_if_quiescent
+
+    await complete_cancel_if_quiescent(
+        session,
+        dispatch.tenant_id,
+        dispatch.source_type,
+        dispatch.workitem_id,
+    )
 
 
 async def _owned(

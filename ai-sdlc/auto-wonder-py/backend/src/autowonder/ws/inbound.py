@@ -418,6 +418,30 @@ class InboundFrameRouter:
                     )
                     await _send_result_ack(executor_session, dispatch_id, False)
                     return
+                from autowonder.dispatch.executor_reports import on_completed_while_pausing
+
+                disposition = await on_completed_while_pausing(
+                    session,
+                    executor_session.tenant_id,
+                    executor_session.executor_id,
+                    dispatch_id,
+                    True,
+                )
+                if disposition == "PAUSED":
+                    from autowonder.guidance.reports import requeue_delivered_for_dispatch
+                    from autowonder.guidance.workflow import on_paused as activate_waiting_rework
+
+                    await requeue_delivered_for_dispatch(
+                        session, executor_session.tenant_id, dispatch_id
+                    )
+                    await activate_waiting_rework(
+                        session, executor_session.tenant_id, dispatch_id
+                    )
+                    await _send_result_ack(executor_session, dispatch_id, True)
+                    return
+                if disposition == "REJECTED":
+                    await _send_result_ack(executor_session, dispatch_id, False)
+                    return
             if success and not durable:
                 logger.warning(
                     "accepting legacy TASK_RESULT without durable checkpoint receipt "
