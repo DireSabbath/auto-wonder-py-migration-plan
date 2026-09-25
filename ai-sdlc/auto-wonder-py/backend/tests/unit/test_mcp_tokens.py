@@ -1,5 +1,6 @@
 """个人 MCP 令牌、调度凭证、会话凭证和平台技能目录。"""
 
+import json
 from datetime import datetime
 
 import pytest
@@ -26,10 +27,25 @@ from autowonder.mcp.tokens import (
     list_tokens,
     revoke_token,
 )
+from autowonder.platform.branding import normalize_public_base_url, normalize_runtime_version
 from autowonder.workitems.models import Workitem
 from tests.unit.test_workitems import MemorySession
 
 _SECRET = "test-secret-test-secret-test-secret-test-secret"
+
+
+def test_personal_token_routes_precede_the_path_token_rpc() -> None:
+    """``/api/mcp/tokens`` 先于 ``/{path_token}`` 注册，签发不会走进 JSON-RPC。"""
+    client = TestClient(create_app())
+    posted: list[str] = []
+    for route in client.app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if path is None or methods is None or "POST" not in methods:
+            continue
+        if path in {"/api/mcp/tokens", "/api/mcp/{path_token}"}:
+            posted.append(path)
+    assert posted.index("/api/mcp/tokens") < posted.index("/api/mcp/{path_token}")
 
 
 def test_mcp_token_routes_require_login_and_skip_workspace_access() -> None:
@@ -214,6 +230,13 @@ async def test_conversation_token_follows_the_active_binding(
 def test_platform_skills_and_tool_names() -> None:
     """平台技能按固定 id 列出，工具目录有 112 个名称。"""
     skills = list_platform_skills()
+    assert list(json.loads(skills[0].install_spec)) == [
+        "tools",
+        "id",
+        "instructions",
+        "mcpServer",
+        "kind",
+    ]
     assert [skill.id for skill in skills] == [
         "autowonder-workitem-operator",
         "autowonder-sdlc-manager",
@@ -229,4 +252,16 @@ def test_platform_skills_and_tool_names() -> None:
     assert len(tools) == 112
     assert tools[0]["name"] == "autowonder.list_projects"
     assert tools[0]["description"].startswith("List the AutoWonder workspaces")
+    assert tools[0]["outputSchema"]["required"] == ["items"]
+    assert tools[0]["inputSchema"]["properties"] == {}
+    upload = next(tool for tool in tools if tool["name"] == "autowonder.workitem_cli_upload_token")
+    settings = get_settings()
+    command = (
+        "npx -y autowonder@"
+        + normalize_runtime_version(settings.recommended_runtime_version)
+        + " workitem upload --server-url "
+        + normalize_public_base_url(settings.public_base_url)
+    )
+    assert command in upload["description"]
+    assert "workspaceId" == tools[1]["inputSchema"]["required"][0]
     assert len({tool["name"] for tool in tools}) == 112

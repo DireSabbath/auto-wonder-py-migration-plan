@@ -9,12 +9,22 @@ from autowonder.config import Settings
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.main import create_app
 from autowonder.security.crypto import AesGcmSecretCrypto
+from autowonder.skills.connection import (
+    config_args,
+    failure_view,
+    normalize_error,
+    parse_config,
+    resolve_values,
+    timeout_seconds,
+    transport_of,
+)
 from autowonder.skills.install_spec import (
     display_install_spec,
     is_mcp_type,
     normalize_install_spec,
     reject_packaged_capability,
 )
+from autowonder.skills.runtime_mcp import decode_v2_result, wait_millis
 from autowonder.skills.schemas import category_id_from_json, skill_ids_from_json
 from autowonder.skills.service import page_window
 
@@ -213,6 +223,40 @@ def test_category_json_matches_java() -> None:
         raise AssertionError("expected missing skillIds")
 
 
+def test_mcp_connection_config_and_result_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """空配置、传输缺省、密钥和超时等待与 Java 连接测试一致。"""
+    monkeypatch.setattr(
+        "autowonder.skills.install_spec.get_settings",
+        lambda: Settings(AUTOWONDER_SECRET_MASTER_KEY=_MASTER_KEY),
+    )
+    with pytest.raises(ValueError, match="MCP 配置为空"):
+        parse_config(None)
+    with pytest.raises(ValueError, match="MCP 配置不是有效 JSON"):
+        parse_config("{")
+    config = parse_config('{"transport":"","args":["--a"],"timeoutSeconds":10}')
+    assert transport_of(config) == "http"
+    assert config_args(config) == ["--a"]
+    assert timeout_seconds(config) == 10
+    assert timeout_seconds({}) == 60
+    assert wait_millis(10) == 90_000
+    assert wait_millis(600) == 615_000
+    assert failure_view(0, "  ").message == "连接失败"
+    assert normalize_error(TimeoutError()) == "连接超时"
+    decoded = decode_v2_result(
+        "t1",
+        json.dumps({"success": True, "message": "ok", "durationMs": 5, "tools": [{"name": "a"}]}),
+    )
+    assert decoded.success is True
+    assert decoded.tools == [{"name": "a"}]
+    broken = decode_v2_result("t1", "{")
+    assert broken.message == "测试结果格式无效，请重新测试"
+    crypto = AesGcmSecretCrypto(_MASTER_KEY)
+    secret = crypto.encrypt("token")
+    assert resolve_values({"Authorization": {"kind": "secretRef", "ref": secret}}) == {
+        "Authorization": "token"
+    }
+
+
 def test_skill_routes_match_java_and_require_login() -> None:
     """已迁移的技能路径与 Java 一致，未带令牌时返回 401。"""
     client = TestClient(create_app())
@@ -227,7 +271,10 @@ def test_skill_routes_match_java_and_require_login() -> None:
     assert "/api/skills/{id}/package/files" in paths
     assert "/api/skills/{id}/package/file" in paths
     assert "/api/skills/{id}/package/download" in paths
-    assert "/api/skills/{id}/connection-test" not in paths
+    assert "post" in paths["/api/skills/{id}/connection-test"]
     response = client.get("/api/skills")
     assert response.status_code == 401
     assert response.json()["code"] == "10401"
+    denied = client.post("/api/skills/1/connection-test")
+    assert denied.status_code == 401
+    assert denied.json()["code"] == "10401"

@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     )
     community_edition: bool = Field(default=True, validation_alias="AUTOWONDER_COMMUNITY_EDITION")
     aone_enabled: bool = Field(default=False, validation_alias="AUTOWONDER_AONE_ENABLED")
+    dingtalk_stream_enabled: bool = Field(
+        default=True,
+        validation_alias="AUTOWONDER_DINGTALK_STREAM_ENABLED",
+    )
     executor_auto_update_enabled: bool = Field(
         default=True,
         validation_alias="AUTOWONDER_RUNTIME_EXECUTOR_AUTO_UPDATE_ENABLED",

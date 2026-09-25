@@ -13,9 +13,7 @@ from autowonder.sdlcs.models import SdlcStep
 from autowonder.workitems.schemas import SubStepView
 from autowonder.workitems.view import shanghai_millis
 
-_TERMINAL_EVENT_TYPES = frozenset(
-    {"step.completed", "step.failed", "step.reused", "step.stale"}
-)
+_TERMINAL_EVENT_TYPES = frozenset({"step.completed", "step.failed", "step.reused", "step.stale"})
 _LONG_MIN = -9223372036854775808
 
 
@@ -160,9 +158,7 @@ def _resolve_order(
     return None
 
 
-def _compare_event(
-    left: DispatchRuntimeEvent, right: DispatchRuntimeEvent | None
-) -> int:
+def _compare_event(left: DispatchRuntimeEvent, right: DispatchRuntimeEvent | None) -> int:
     if right is None:
         return 1
     if left.id is not None and right.id is not None:

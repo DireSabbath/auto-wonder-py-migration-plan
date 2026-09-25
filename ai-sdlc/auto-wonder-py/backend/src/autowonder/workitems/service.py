@@ -15,7 +15,7 @@ from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.page import PageResult
 from autowonder.db.rows import rowcount
 from autowonder.debuglogs.sanitizer import java_is_blank
-from autowonder.dispatch.assignment import on_workitem_assigned
+from autowonder.dispatch.assignment import drive_queued, on_workitem_assigned
 from autowonder.dispatch.models import Dispatch
 from autowonder.integrations.models import ExternalWorkitemLink
 from autowonder.scheduledtasks.models import ScheduledTask, ScheduledTaskRun
@@ -24,6 +24,11 @@ from autowonder.sdlcs.models import Sdlc, SdlcStep
 from autowonder.squads.models import SquadMember
 from autowonder.statemachines.models import StatusNode, StatusTemplate, StatusTransition
 from autowonder.users.models import User
+from autowonder.workitems.collaboration import (
+    find_collaboration,
+    principal_name,
+    source_creators,
+)
 from autowonder.workitems.events import (
     WorkitemAssigned,
     WorkitemContentUpdated,
@@ -536,6 +541,7 @@ async def assign_as(
             if changed == 0:
                 raise BizError(ErrorCode.WORKITEM_VERSION_CONFLICT)
             reloaded = await _reload(session, workitem_id)
+    queued_dispatch = None
     if assignee_type == "AGENT" and assignee_ref is not None:
         planned = reloaded.scheduled_start_at
         deferred = planned is not None and is_after(planned, now_local())
@@ -546,7 +552,8 @@ async def assign_as(
                 reloaded.scheduled_start_at,
             )
         else:
-            on_workitem_assigned(
+            queued_dispatch = await on_workitem_assigned(
+                session,
                 WorkitemAssigned(
                     tenant_id,
                     workitem_id,
@@ -554,7 +561,7 @@ async def assign_as(
                     assignee_ref,
                     reloaded.version,
                     modifier_user_id,
-                )
+                ),
             )
     if (
         assignee_type == "HUMAN"
@@ -577,6 +584,7 @@ async def assign_as(
             )
         )
     await session.commit()
+    await drive_queued(queued_dispatch)
     return await _detail(session, workitem_id)
 
 
@@ -610,8 +618,10 @@ async def update_scheduled_start(
                 raise BizError(ErrorCode.WORKITEM_NOT_FOUND)
             return await _render_detail(session, fresh)
         fresh = await _reload(session, workitem_id)
+        queued_dispatch = None
         if execute_now and fresh.assignee_type == "AGENT" and fresh.assignee_ref is not None:
-            on_workitem_assigned(
+            queued_dispatch = await on_workitem_assigned(
+                session,
                 WorkitemAssigned(
                     tenant_id,
                     workitem_id,
@@ -619,9 +629,10 @@ async def update_scheduled_start(
                     fresh.assignee_ref,
                     fresh.version,
                     user_id,
-                )
+                ),
             )
         await session.commit()
+        await drive_queued(queued_dispatch)
         return await _detail(session, workitem_id)
     if workitem.assignee_type != "AGENT" or workitem.assignee_ref is None:
         raise BizError(ErrorCode.PARAM_INVALID)
@@ -775,6 +786,7 @@ async def _decorate_page(
     sdlcs = await _sdlcs_by_ids(session, sdlc_ids)
     latest = await _latest_by_workitem(session, tenant_id, workitem_ids)
     links = await _links_by_workitem(session, tenant_id, workitem_ids)
+    creators = await source_creators(session, links)
     dispatches = await _dispatches_by_workitem(session, tenant_id, workitem_ids)
     now = now_local()
     now_ms = shanghai_millis(now)
@@ -818,6 +830,7 @@ async def _decorate_page(
                 stuck_threshold_ms=stuck,
                 include_runtime=True,
                 origin=None,
+                source_creator=creators.get(workitem.id),
             )
         )
     return views
@@ -900,6 +913,9 @@ async def _render_detail(session: AsyncSession, workitem: Workitem) -> WorkitemV
     if workitem.tenant_id is not None:
         links = await _links_for(session, workitem.tenant_id, workitem.id)
         dispatches = await _dispatches_for(session, workitem.tenant_id, workitem.id)
+    collaboration = None
+    if workitem.tenant_id is not None:
+        collaboration = await find_collaboration(session, workitem.tenant_id, workitem.id)
     now = now_local()
     return render_workitem(
         workitem,
@@ -919,6 +935,7 @@ async def _render_detail(session: AsyncSession, workitem: Workitem) -> WorkitemV
         stuck_threshold_ms=get_settings().workitem_stuck_threshold_ms,
         include_runtime=False,
         origin=await _origin(session, workitem),
+        external_collaboration=collaboration,
     )
 
 
@@ -1158,6 +1175,8 @@ async def _actor_name(
         if user is None:
             return None
         return person_name(user.nickname, user.username)
+    if actor_type == "EXTERNAL":
+        return await principal_name(session, ref)
     return None
 
 

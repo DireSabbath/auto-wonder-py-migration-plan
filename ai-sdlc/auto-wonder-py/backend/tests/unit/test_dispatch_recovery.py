@@ -69,7 +69,7 @@ class Transport:
         self.calls: list[Dispatch] = []
         self.error: BaseException | None = None
 
-    def pause(self, dispatch: Dispatch) -> None:
+    async def pause(self, dispatch: Dispatch) -> None:
         self.calls.append(dispatch)
         if self.error is not None:
             raise self.error
@@ -275,9 +275,7 @@ async def test_cancel_before_delivery_fences_packaging_worker_without_sending_st
     await cancel(session, 1, 10, 100, 7, False, transport.pause)
     assert (await find_dispatch(session, 100)).status == "CANCELED"
     assert guidance_row(session).status == "CANCELED"
-    assert (
-        await transition(session, stale, "DISPATCHED", None, 50, None, None, None) == 0
-    )
+    assert await transition(session, stale, "DISPATCHED", None, 50, None, None, None) == 0
     assert transport.calls == []
     assert stop_pending(session) is False
 
@@ -375,9 +373,7 @@ async def test_reconcile_repairs_history_and_retries_durable_stop_intent() -> No
 async def test_reconcile_self_heals_stop_the_live_runtime_disproves() -> None:
     session, transport = await harness()
     await put_dispatch(session, "DISPATCHED", 50)
-    assert (
-        await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
-    )
+    assert await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
     assert stop_pending(session) is True
     row = recovery_row(session)
     row.requested_at = now_local() - timedelta(milliseconds=180_000)
@@ -390,9 +386,7 @@ async def test_reconcile_self_heals_stop_the_live_runtime_disproves() -> None:
 async def test_reconcile_keeps_retrying_stops_the_runtime_cannot_disprove() -> None:
     session, transport = await harness()
     await put_dispatch(session, "DISPATCHED", 50)
-    assert (
-        await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
-    )
+    assert await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
     row = recovery_row(session)
     row.requested_at = now_local() - timedelta(milliseconds=180_000)
     row.last_sent_at = now_local() - timedelta(milliseconds=60_000)
@@ -430,9 +424,7 @@ async def _mysql_datetime_stop_retry(heartbeat: bool) -> None:
 async def test_reconcile_does_not_heal_stops_younger_than_the_handshake_grace() -> None:
     session, transport = await harness()
     await put_dispatch(session, "DISPATCHED", 50)
-    assert (
-        await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
-    )
+    assert await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
     row = recovery_row(session)
     row.requested_at = now_local() - timedelta(milliseconds=10_000)
     row.last_sent_at = now_local() - timedelta(milliseconds=60_000)
@@ -444,9 +436,7 @@ async def test_reconcile_does_not_heal_stops_younger_than_the_handshake_grace() 
 async def test_reconcile_heals_old_stops_when_dates_stay_naive() -> None:
     session, transport = await harness()
     await put_dispatch(session, "DISPATCHED", 50)
-    assert (
-        await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
-    )
+    assert await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
     row = recovery_row(session)
     row.requested_at = now_local() - timedelta(milliseconds=180_000)
     row.last_sent_at = now_local() - timedelta(milliseconds=60_000)
@@ -459,9 +449,7 @@ async def test_reconcile_heals_old_stops_when_dates_stay_naive() -> None:
 async def test_reconcile_preserves_young_stop_grace_when_dates_stay_naive() -> None:
     session, transport = await harness()
     await put_dispatch(session, "DISPATCHED", 50)
-    assert (
-        await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
-    )
+    assert await move(session, "TIMEOUT", "DISPATCH_ACK_TIMEOUT") == 1
     row = recovery_row(session)
     row.requested_at = now_local() - timedelta(milliseconds=10_000)
     row.last_sent_at = now_local() - timedelta(milliseconds=60_000)

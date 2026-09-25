@@ -3,7 +3,7 @@
 import re
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Body, Depends, Header, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,7 +126,7 @@ async def report_usage(
     dispatchId: Annotated[str | None, Query()] = None,
     token: Annotated[str | None, Query()] = None,
     authorization: Annotated[str | None, Header()] = None,
-    body: TaskUsageReportRequest | None = None,
+    body: TaskUsageReportRequest = Body(),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """接受执行器上报的任务用量。"""

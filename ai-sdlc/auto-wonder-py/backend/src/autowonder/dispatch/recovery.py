@@ -1,11 +1,11 @@
 """调度取消意图、工单关闭围栏，以及评论投递的终态投影。
 
-暂停帧发不出去时只记下 ``stop_pending``，由对账再送。调度主环尚未调用
-``ready`` / ``retry_packaging``，这些函数仍按 Java 的语义保留。
+暂停帧发不出去时只记下 ``stop_pending``，由对账再送。``ready`` 和
+``retry_packaging`` 由待派发主环调用，语义与 Java 一致。
 """
 
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import cast
@@ -42,7 +42,7 @@ STOP_UNCONFIRMED = "CANCELED_STOP_UNCONFIRMED: 平台已结束，执行器停止
 USER_CANCELED = "USER_CANCELED"
 PACKAGE_TRANSIENT = "TASK_PACKAGE_TRANSIENT_ERROR"
 
-Pause = Callable[[Dispatch], None]
+Pause = Callable[[Dispatch], Awaitable[None]]
 Online = Callable[[int], bool]
 SnapshotOf = Callable[[int], DispatchSnapshot | None]
 
@@ -479,7 +479,7 @@ async def send_stop(
     row.gmt_modified = now_local()
     await session.commit()
     try:
-        pause(dispatch)
+        await pause(dispatch)
     except Exception:
         logger.warning(
             "cancel control delivery deferred dispatchId=%s",
@@ -673,9 +673,7 @@ async def _cancel_locked(
         return
     if not force and await cancel_requested(session, dispatch.tenant_id, dispatch.id):
         return
-    pending_stop = (
-        dispatch.executor_id is not None and dispatch.status not in QUIET_BEFORE_STOP
-    )
+    pending_stop = dispatch.executor_id is not None and dispatch.status not in QUIET_BEFORE_STOP
     target = "CANCELED"
     if pending_stop and not force:
         target = "PAUSING"
@@ -886,18 +884,14 @@ async def _pending_stops(
     cutoff: datetime,
 ) -> list[tuple[DispatchRecovery, Dispatch | None]]:
     rows = (
-        await session.scalars(
-            select(DispatchRecovery).where(DispatchRecovery.stop_pending == 1)
-        )
+        await session.scalars(select(DispatchRecovery).where(DispatchRecovery.stop_pending == 1))
     ).all()
     chosen: list[tuple[DispatchRecovery, Dispatch | None]] = []
     for row in rows:
         if row.last_sent_at is not None and row.last_sent_at >= cutoff:
             continue
         dispatch = await find_dispatch(session, row.dispatch_id)
-        if executor_id is not None and (
-            dispatch is None or dispatch.executor_id != executor_id
-        ):
+        if executor_id is not None and (dispatch is None or dispatch.executor_id != executor_id):
             continue
         chosen.append((row, dispatch))
     chosen.sort(key=lambda item: _sent_order(item[0]))

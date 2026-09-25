@@ -20,9 +20,7 @@ async def follow(
     await _require(session, workitem_id, tenant_id)
     existing = await _find(session, tenant_id, workitem_id, user_id)
     if existing is None:
-        session.add(
-            WorkitemWatcher(tenant_id=tenant_id, workitem_id=workitem_id, user_id=user_id)
-        )
+        session.add(WorkitemWatcher(tenant_id=tenant_id, workitem_id=workitem_id, user_id=user_id))
         await session.flush()
     await session.commit()
     return await watch_state(session, workitem_id, tenant_id, user_id)

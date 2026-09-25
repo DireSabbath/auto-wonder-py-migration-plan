@@ -1,6 +1,6 @@
 """工作空间删除后，停掉仍在执行的派发。
 
-远程暂停要等执行器连接。当前没有连接时，按 Java 的发送失败路径把状态写成 PAUSE_FAILED。
+暂停帧发给已分配的执行器。发送失败时按 Java 把状态写成 PAUSE_FAILED。
 """
 
 import logging
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.db.rows import rowcount
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.transport import deliver_pause
 from autowonder.scheduledtasks.service import DELETION_REASON
 
 logger = logging.getLogger(__name__)
@@ -78,9 +79,9 @@ async def _stop(session: AsyncSession, dispatch: Dispatch, operator_id: int) -> 
     return True
 
 
-def _send_pause(_dispatch: Dispatch) -> None:
-    """执行器通道还没有连接时，暂停帧发不出去。"""
-    raise RuntimeError(PAUSE_SEND_FAILURE)
+async def _send_pause(dispatch: Dispatch) -> None:
+    """向这条派发的执行器发送暂停帧。"""
+    await deliver_pause(dispatch)
 
 
 async def _request_pause(session: AsyncSession, dispatch: Dispatch, operator_id: int) -> None:
@@ -92,7 +93,8 @@ async def _request_pause(session: AsyncSession, dispatch: Dispatch, operator_id:
     if dispatch.status == "PAUSED":
         return
     if dispatch.status == "PAUSING":
-        _send_pause(dispatch)
+        await _send_pause(dispatch)
+        return
     if dispatch.status not in {"DISPATCHED", "ACKED", "RUNNING", "PAUSE_FAILED"}:
         raise BizError(ErrorCode.CONFLICT, "当前执行状态不能暂停")
     error: str | None = "" if dispatch.status == "PAUSE_FAILED" else None
@@ -110,7 +112,7 @@ async def _request_pause(session: AsyncSession, dispatch: Dispatch, operator_id:
     dispatch.version = dispatch.version + 1
     await session.commit()
     try:
-        _send_pause(dispatch)
+        await _send_pause(dispatch)
     except RuntimeError as send_failed:
         await _mark_pause_failed(session, dispatch, operator_id, send_failed)
         raise

@@ -59,7 +59,7 @@ def test_workspace_name_rules() -> None:
 
 
 def test_page_and_workspace_json_names() -> None:
-    """分页和 isOwner 使用 Java 的字段名，时间写成毫秒。"""
+    """分页和 isOwner 使用 Java 的字段名，时间写成 Jackson 的 ISO-8601。"""
     payload = dump_data(
         PageResult.model_validate(
             {
@@ -73,7 +73,7 @@ def test_page_and_workspace_json_names() -> None:
     assert payload["list"][0]["isOwner"] is True
     assert payload["pageNum"] == 1
     stamp = dump_data(datetime(2026, 9, 23, 8, 0, 0))
-    assert isinstance(stamp, int)
+    assert stamp == "2026-09-23T00:00:00.000+00:00"
 
 
 def test_missing_workspace_is_not_member() -> None:

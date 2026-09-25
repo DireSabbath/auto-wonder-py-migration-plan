@@ -1,6 +1,6 @@
 """定时任务定义与小队、数字员工引用校验。失败码 30004。"""
 
-from typing import cast
+from typing import NoReturn, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,8 +35,10 @@ def validate_definition(task: ScheduledTask, schedule: ScheduledTaskSchedule) ->
     instruction = task.instruction_md
     if name is None or java_is_blank(name) or _utf16_len(name) > MAX_NAME_CHARS:
         _fail("任务名称不能为空且不能超过 256 个字符")
-    if instruction is None or java_is_blank(instruction) or len(instruction.encode("utf-8")) > (
-        MAX_INSTRUCTION_BYTES
+    if (
+        instruction is None
+        or java_is_blank(instruction)
+        or len(instruction.encode("utf-8")) > (MAX_INSTRUCTION_BYTES)
     ):
         _fail("任务指令不能为空或过长")
     if not _positive(task.squad_id) or not _positive(task.initial_agent_id):
@@ -89,7 +91,7 @@ async def validate_references(
 def _validate_schedule(task: ScheduledTask, schedule: ScheduledTaskSchedule) -> None:
     if task.timezone is None or java_is_blank(task.timezone):
         _fail("timezone 不能为空")
-    cron = cast(str | None, task.cron_expression)
+    cron = task.cron_expression
     cron_blank = cron is None or java_is_blank(cron)
     if task.schedule_type == "ONCE":
         if task.run_at is None or not cron_blank:
@@ -112,5 +114,5 @@ def _utf16_len(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     raise BizError(ErrorCode.SCHEDULED_TASK_VALIDATION_FAILED, message)

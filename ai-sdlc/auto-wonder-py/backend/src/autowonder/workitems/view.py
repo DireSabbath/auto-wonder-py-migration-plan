@@ -17,7 +17,12 @@ from autowonder.workitems.rules import (
     pending_decision,
     scheduled_phase,
 )
-from autowonder.workitems.schemas import WorkitemOriginView, WorkitemView
+from autowonder.workitems.schemas import (
+    ExternalCollaborationView,
+    ExternalPrincipalView,
+    WorkitemOriginView,
+    WorkitemView,
+)
 
 
 def person_name(nickname: str | None, username: str | None) -> str | None:
@@ -65,8 +70,10 @@ def render_workitem(
     stuck_threshold_ms: int,
     include_runtime: bool,
     origin: WorkitemOriginView | None,
+    external_collaboration: ExternalCollaborationView | None = None,
+    source_creator: ExternalPrincipalView | None = None,
 ) -> WorkitemView:
-    """详情不带执行健康和定时阶段；列表补上这些派生字段。"""
+    """详情带协作快照；列表带来源创建者、健康和定时阶段。"""
     source_type, deletable, deletable_reason, provider, url = _eligibility(
         workitem, links, dispatches
     )
@@ -77,6 +84,8 @@ def render_workitem(
     decision = False
     source_provider: str | None = None
     source_url: str | None = None
+    shown_collaboration: ExternalCollaborationView | None = None
+    shown_creator: ExternalPrincipalView | None = None
     if include_runtime:
         if latest is not None:
             execution_status = latest.status
@@ -99,6 +108,9 @@ def render_workitem(
         if source_type == "EXTERNAL":
             source_provider = provider
             source_url = url
+            shown_creator = source_creator
+    else:
+        shown_collaboration = external_collaboration
     return WorkitemView(
         id=workitem.id,
         work_type=workitem.work_type,
@@ -130,6 +142,8 @@ def render_workitem(
         deletable=deletable,
         deletable_reason=deletable_reason,
         origin=origin,
+        external_collaboration=shown_collaboration,
+        source_creator=shown_creator,
         scheduled_start_at=workitem.scheduled_start_at,
         scheduled_start_triggered_at=workitem.scheduled_start_triggered_at,
         scheduled_phase=phase,
@@ -171,7 +185,7 @@ def _eligibility(
 ) -> tuple[str, bool, str | None, str | None, str | None]:
     present = [link for link in links if link is not None]
     if len(present) > 0:
-        preferred = _preferred(present)
+        preferred = prefer_link(present)
         provider = None
         url = None
         if preferred is not None:
@@ -184,7 +198,8 @@ def _eligibility(
     return "NATIVE", True, None, None, None
 
 
-def _preferred(links: list[ExternalWorkitemLink]) -> ExternalWorkitemLink | None:
+def prefer_link(links: list[ExternalWorkitemLink]) -> ExternalWorkitemLink | None:
+    """AONE 优先，其次更早创建、更小 id。"""
     best: ExternalWorkitemLink | None = None
     best_key: tuple[int, int, datetime, int, int] | None = None
     for link in links:

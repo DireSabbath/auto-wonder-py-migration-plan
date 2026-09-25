@@ -44,6 +44,7 @@ select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/autowonder/**/models.py" = ["E501"]
+"verify/jobs_dual.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -115,6 +116,7 @@ forbidden_modules = [
 dev = [
     "import-linter>=2.1",
     "mypy>=1.13",
+    "playwright>=1.63.0",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",

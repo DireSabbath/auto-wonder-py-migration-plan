@@ -5,12 +5,13 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autowonder.artifacts.cli_tokens import deployment_endpoint
 from autowonder.core.context import current_user_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import ok
 from autowonder.core.schema import ApiModel
 from autowonder.db.session import get_session
-from autowonder.mcp.catalog import list_tools
+from autowonder.mcp.catalog import bind_tool_catalog
 from autowonder.mcp.skills import list_platform_skills
 from autowonder.mcp.tokens import issue_token, list_tokens, revoke_token
 
@@ -47,10 +48,11 @@ async def listed(session: AsyncSession = Depends(get_session)) -> dict[str, Any]
 
 
 @router.get("/tools")
-async def tools() -> dict[str, Any]:
-    """工具目录。调用前仍要求已登录。"""
+async def tools(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """工具目录。说明里的命令使用当前部署根地址。"""
     _user_id()
-    return ok(list_tools())
+    server_url, runtime_version = await deployment_endpoint(session)
+    return ok(bind_tool_catalog(server_url, runtime_version))
 
 
 @router.get("/platform-skills")

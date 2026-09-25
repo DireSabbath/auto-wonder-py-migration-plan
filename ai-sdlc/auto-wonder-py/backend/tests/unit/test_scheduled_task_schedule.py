@@ -1,14 +1,12 @@
 """Spring cron 与任务定义校验的验收向量。"""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from autowonder.core.errors import BizError
 from autowonder.scheduledtasks.schedule import ScheduledTaskSchedule
-from autowonder.scheduledtasks.validator import validate_definition, validate_modes
-
-UTC = timezone.utc
+from autowonder.scheduledtasks.validator import validate_modes
 
 
 def _instant(text: str) -> datetime:
@@ -20,7 +18,9 @@ def test_next_shanghai_two_am_and_ten_minute_preview() -> None:
     schedule = ScheduledTaskSchedule()
     nxt = schedule.next("0 0 2 * * *", "Asia/Shanghai", _instant("2026-08-10T17:59:59Z"))
     assert nxt == _instant("2026-08-10T18:00:00Z")
-    preview = schedule.preview("0 */10 * * * *", "Asia/Shanghai", _instant("2026-08-10T00:00:00Z"), 5)
+    preview = schedule.preview(
+        "0 */10 * * * *", "Asia/Shanghai", _instant("2026-08-10T00:00:00Z"), 5
+    )
     assert preview == [
         _instant("2026-08-10T00:10:00Z"),
         _instant("2026-08-10T00:20:00Z"),

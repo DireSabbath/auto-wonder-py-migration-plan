@@ -2,12 +2,13 @@
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
-from typing import cast
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from sqlalchemy import and_, case, func, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
 
 from autowonder.audits.service import AuditRecord, record_required
 from autowonder.core.errors import BizError, ErrorCode
@@ -37,16 +38,18 @@ TERMINAL_RUN_STATUSES = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELED
 HEALTH_COMPLETED = ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELED", "SKIPPED")
 _ASCII_WS = re.compile(r"[ \t\n\x0b\f\r]+")
 _SCHEDULE = ScheduledTaskSchedule()
-_SHANGHAI_DAY_START = literal_column(
+_SHANGHAI_DAY_START: ColumnElement[Any] = literal_column(
     "DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR) - INTERVAL 8 HOUR"
 )
-_SHANGHAI_DAY_END = literal_column("DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR) + INTERVAL 16 HOUR")
-_SINCE_30_DAYS = literal_column("UTC_TIMESTAMP() - INTERVAL 30 DAY")
+_SHANGHAI_DAY_END: ColumnElement[Any] = literal_column(
+    "DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR) + INTERVAL 16 HOUR"
+)
+_SINCE_30_DAYS: ColumnElement[Any] = literal_column("UTC_TIMESTAMP() - INTERVAL 30 DAY")
 
 
 def utc_now() -> datetime:
     """当前 UTC 瞬间，测试可以替换。"""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def pause_active_by_workspace(
@@ -170,17 +173,26 @@ async def list_tasks(
     total = await session.scalar(
         count_statement(workspace_id, status, creator_id, squad_id, keyword)
     )
-    return PageResult(
-        list_=views,
-        total=int(total),
-        page_num=bounded_offset // bounded_limit + 1,
-        page_size=bounded_limit,
+    return PageResult.model_validate(
+        {
+            "list": views,
+            "total": int(cast(int, total)),
+            "pageNum": bounded_offset // bounded_limit + 1,
+            "pageSize": bounded_limit,
+        }
     )
 
 
-def preview_times(cron_expression: str | None, timezone_name: str | None, count: int) -> list[datetime]:
+def preview_times(
+    cron_expression: str | None, timezone_name: str | None, count: int
+) -> list[datetime]:
     """用当前时间预览接下来的触发瞬间。"""
-    return _SCHEDULE.preview(normalize_cron(cron_expression), normalize_timezone(timezone_name), utc_now(), count)
+    return _SCHEDULE.preview(
+        normalize_cron(cron_expression),
+        normalize_timezone(timezone_name),
+        utc_now(),
+        count,
+    )
 
 
 async def summarize_tasks(
@@ -213,18 +225,18 @@ async def enable_task(
     _require_actor(workspace_id, user_id)
     _require_task_id(task_id)
     task = await _require_task(session, workspace_id, task_id)
-    _require_version(task.version, version)
+    pinned_version = _require_version(task.version, version)
     if task.status != "PAUSED":
         raise BizError(ErrorCode.SCHEDULED_TASK_INVALID_STATE, "只有暂停任务可以启用")
     validate_definition(task, _SCHEDULE)
     await validate_references(session, task, workspace_id)
     task.next_fire_at = _next_fire(task, utc_now())
     task.modifier_id = user_id
-    task.version = version
-    changed = await _update_definition(session, task, cast(int, version))
+    task.version = pinned_version
+    changed = await _update_definition(session, task, pinned_version)
     if changed != 1:
         raise BizError(ErrorCode.SCHEDULED_TASK_VERSION_CONFLICT)
-    status_version = cast(int, version) + 1
+    status_version = pinned_version + 1
     changed = await _update_status(
         session, workspace_id, task_id, "PAUSED", "ACTIVE", status_version, user_id
     )
@@ -336,13 +348,12 @@ async def task_health(
 ) -> ScheduledTaskHealthView:
     """近 30 天按完成时间统计。完成数包含跳过，成功数只算成功。"""
     since = naive_utc(utc_now() - timedelta(days=30))
-    completed = await session.scalar(
-        _health_count(workspace_id, task_id, HEALTH_COMPLETED, since)
+    completed = await session.scalar(_health_count(workspace_id, task_id, HEALTH_COMPLETED, since))
+    succeeded = await session.scalar(_health_count(workspace_id, task_id, ("SUCCEEDED",), since))
+    return ScheduledTaskHealthView(
+        completed30d=int(cast(int, completed)),
+        success30d=int(cast(int, succeeded)),
     )
-    succeeded = await session.scalar(
-        _health_count(workspace_id, task_id, ("SUCCEEDED",), since)
-    )
-    return ScheduledTaskHealthView(completed30d=int(completed), success30d=int(succeeded))
 
 
 def list_statement(
@@ -355,7 +366,9 @@ def list_statement(
     offset: int,
 ) -> Select[tuple[ScheduledTask]]:
     """列表 SQL：工作空间、未删除，可选状态、创建人、小队和名称。"""
-    statement = select(ScheduledTask).where(*_filters(workspace_id, status, creator_id, squad_id, keyword))
+    statement = select(ScheduledTask).where(
+        *_filters(workspace_id, status, creator_id, squad_id, keyword)
+    )
     return statement.order_by(ScheduledTask.id.desc()).limit(limit).offset(offset)
 
 
@@ -479,7 +492,7 @@ def naive_utc(value: datetime | None) -> datetime | None:
         return None
     if value.tzinfo is None:
         return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def aware_utc(value: datetime | None) -> datetime | None:
@@ -487,8 +500,8 @@ def aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def normalize_cron(expression: str | None) -> str | None:
@@ -589,9 +602,10 @@ async def _require_task(session: AsyncSession, workspace_id: int, task_id: int) 
     return task
 
 
-def _require_version(actual: int | None, expected: int | None) -> None:
+def _require_version(actual: int | None, expected: int | None) -> int:
     if expected is None or expected < 0 or expected != actual:
         raise BizError(ErrorCode.SCHEDULED_TASK_VERSION_CONFLICT)
+    return expected
 
 
 async def _transition(
@@ -760,8 +774,8 @@ def _filters(
     creator_id: int | None,
     squad_id: int | None,
     keyword: str | None,
-) -> list[object]:
-    clauses: list[object] = [
+) -> list[ColumnElement[bool]]:
+    clauses: list[ColumnElement[bool]] = [
         ScheduledTask.workspace_id == workspace_id,
         ScheduledTask.is_deleted == 0,
     ]

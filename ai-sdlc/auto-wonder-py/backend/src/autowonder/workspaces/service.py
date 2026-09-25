@@ -126,6 +126,38 @@ async def create_workspace(
     return result
 
 
+async def list_by_user_with_access(session: AsyncSession, user_id: int) -> list[WorkspaceView]:
+    """个人 MCP 令牌可见的工作空间。只含成员关系上的名称、描述和权限。"""
+    rows = (
+        await session.execute(
+            select(Org.id, Org.name, Org.description, Org.owner_id, OrgMember.access_level)
+            .join(OrgMember, Org.id == OrgMember.tenant_id)
+            .where(
+                OrgMember.user_id == user_id,
+                OrgMember.status == 0,
+                OrgMember.is_deleted == 0,
+                Org.is_deleted == 0,
+            )
+            .order_by(Org.gmt_create.desc())
+        )
+    ).all()
+    result: list[WorkspaceView] = []
+    for workspace_id, name, description, owner_id, access_name in rows:
+        access_level = exact_access_level(access_name)
+        owner = owner_id == user_id
+        result.append(
+            WorkspaceView(
+                id=workspace_id,
+                name=name,
+                description=description,
+                access_level=access_level.name,
+                is_owner=owner,
+                can_manage=owner or access_level == WorkspaceAccessLevel.ADMIN,
+            )
+        )
+    return result
+
+
 async def list_by_user(session: AsyncSession, user_id: int) -> list[WorkspaceView]:
     """当前用户加入的在用工作空间，带编辑弹层需要的完整字段。"""
     levels = await _levels_by_workspace(session, user_id)
@@ -513,8 +545,13 @@ async def delete_workspace(
     workspace_id: int,
     operator_id: int,
 ) -> WorkspaceView:
-    """逻辑删除并释放名称。定时任务在同一事务里暂停，在途派发在提交后处理。"""
+    """逻辑删除并释放名称。定时任务在同一事务里暂停，在途派发在提交后处理。
+
+    返回的是删除前读到的工作空间。SQL 会把 version 加一，但响应仍用删除前的值。
+    """
     workspace = await _require_manageable(session, workspace_id, operator_id)
+    result = _to_view(workspace)
+    await _apply_manage_flags(session, result, workspace, operator_id)
     deleted = rowcount(
         await session.execute(
             update(Org)
@@ -541,8 +578,6 @@ async def delete_workspace(
     await record_required(session, audit)
     await session.commit()
     await stop_deleted_workspace_dispatches(session, workspace_id, operator_id)
-    result = _to_view(workspace)
-    await _apply_manage_flags(session, result, workspace, operator_id)
     return result
 
 
@@ -624,6 +659,7 @@ async def restore_workspace(
         name = require_name(requested_name)
     if await _count_active_by_name(session, name, None) > 0:
         raise BizError(ErrorCode.ORG_RESTORE_NAME_CONFLICT)
+    shown_version = workspace.version
     restored = rowcount(
         await session.execute(
             update(Org)
@@ -656,7 +692,7 @@ async def restore_workspace(
     await session.commit()
     result = _to_view(workspace)
     result.name = name
-    result.version = workspace.version + 1
+    result.version = shown_version + 1
     await _apply_manage_flags(session, result, workspace, operator_id)
     return result
 

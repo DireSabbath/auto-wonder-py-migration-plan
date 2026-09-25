@@ -48,9 +48,7 @@ _STUCK_MS = 120_000
 _PLAN_STATUSES = frozenset({"RUN", "REUSED", "SKIPPED"})
 _DISPATCH_TERMINAL = frozenset({"SUCCEEDED", "FAILED", "TIMEOUT", "CANCELED"})
 _PAUSEABLE = frozenset({"DISPATCHED", "ACKED", "RUNNING"})
-_INTERACTION = frozenset(
-    {"SIDE_INTERACTION", "CANONICAL_INTERACTION", "COMMENT_INTERACTION"}
-)
+_INTERACTION = frozenset({"SIDE_INTERACTION", "CANONICAL_INTERACTION", "COMMENT_INTERACTION"})
 _IN_FLIGHT = frozenset({"PACKAGING", "DISPATCHED", "ACKED", "RUNNING"})
 _NO_AGENT = object()
 
@@ -90,9 +88,7 @@ async def get_delivery_progress(
         plan = None
     steps = _compat_steps(workitem, agents)
     if len(steps) == 0 and workitem.sdlc_id is not None:
-        steps = await _legacy_steps(
-            session, names, step_lists, workitem, dispatches, now_ms
-        )
+        steps = await _legacy_steps(session, names, step_lists, workitem, dispatches, now_ms)
     graph = await _process_graph(session, names, workitem, dispatches, guidance_rows)
     return DeliveryProgressView(
         steps=steps,
@@ -219,9 +215,7 @@ async def _formal_step(
         error=error,
         sub_steps=sub_steps,
         duration_ms=timeline.duration_of(step),
-        attempts=await _attempts(
-            session, names, step_dispatches, resumable_id, events, now_ms
-        ),
+        attempts=await _attempts(session, names, step_dispatches, resumable_id, events, now_ms),
     )
 
 
@@ -646,9 +640,7 @@ def _plan_step(raw: object) -> WorkflowPlanStepView | None:
     )
 
 
-def _apply_plan(
-    plan: WorkflowPlanView | None, agents: list[AgentDeliveryProgressView]
-) -> bool:
+def _apply_plan(plan: WorkflowPlanView | None, agents: list[AgentDeliveryProgressView]) -> bool:
     if plan is None:
         return True
     matches: list[tuple[DeliveryStepView, WorkflowPlanStepView]] = []

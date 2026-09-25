@@ -1,6 +1,6 @@
 """定时任务请求与响应。触发时间按 UTC 瞬间输出，创建时间仍是上海本地钟。"""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from pydantic import BeforeValidator
@@ -15,17 +15,17 @@ def parse_utc_instant(value: object) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     if isinstance(value, str):
         text = value[:-1] + "+00:00" if value.endswith("Z") else value
         parsed = datetime.fromisoformat(text)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise BizError(ErrorCode.SCHEDULED_TASK_VALIDATION_FAILED, "runAt 不合法")
-    return datetime.fromtimestamp(float(value) / 1000, timezone.utc)
+    return datetime.fromtimestamp(float(value) / 1000, UTC)
 
 
 UtcInstant = Annotated[datetime | None, BeforeValidator(parse_utc_instant)]
@@ -113,6 +113,27 @@ class ScheduledTaskHealthView(ApiModel):
     success30d: int = 0
 
 
+class RunNowRequest(ApiModel):
+    """立即运行。``requestId`` 和 ``version`` 都必须由调用方带来。"""
+
+    request_id: str | None = None
+    version: int | None = None
+
+
+class ScheduledRunMentionCandidateView(ApiModel):
+    """运行上的 @ 候选。不在冻结快照里的数字人仍返回，并带上不能 @ 的原因。"""
+
+    user_id: int | None = None
+    target_type: str | None = None
+    name: str | None = None
+    display_id: str | None = None
+    agent: bool = False
+    online: bool = False
+    executor_status: str | None = None
+    mentionable: bool = False
+    mention_disabled_reason: str | None = None
+
+
 class ScheduledTaskRunView(ApiModel):
     """运行实例列表项。计划时间是 UTC 瞬间。"""
 
@@ -134,3 +155,9 @@ class ScheduledTaskRunView(ApiModel):
     version: int | None = None
     gmt_create: datetime | None = None
     gmt_modified: datetime | None = None
+
+
+class ScheduledTaskRunDetailView(ScheduledTaskRunView):
+    """运行详情。最后一条派发的执行器 id 单独带上。"""
+
+    executor_id: int | None = None

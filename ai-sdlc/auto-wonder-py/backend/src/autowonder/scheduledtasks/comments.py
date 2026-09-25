@@ -35,6 +35,68 @@ class RunMention:
     content_md: str
 
 
+async def list_run_comments(
+    session: AsyncSession,
+    workspace_id: int,
+    run_id: int,
+) -> list[CommentView]:
+    """列出一次运行上的评论。运行不存在按工单不存在处理。"""
+    require_scheduled_capability()
+    await _require_run(session, workspace_id, run_id)
+    rows = await session.scalars(
+        select(WorkitemComment)
+        .where(
+            WorkitemComment.tenant_id == workspace_id,
+            WorkitemComment.source_type == "SCHEDULED_TASK_RUN",
+            WorkitemComment.workitem_id == run_id,
+        )
+        .order_by(WorkitemComment.id.asc())
+    )
+    return [_comment_view(row) for row in rows.all()]
+
+
+async def add_human_comment(
+    session: AsyncSession,
+    workspace_id: int,
+    run_id: int,
+    user_id: int,
+    content_md: str | None,
+    explicit_target_agent_ids: list[int],
+    explicit_target_human_ids: list[int],
+) -> tuple[CommentView, list[RunMention]]:
+    """给运行写真人评论。空白正文是参数不合法。"""
+    require_scheduled_capability()
+    run = await _require_run(session, workspace_id, run_id)
+    if content_md is None or java_is_blank(content_md):
+        raise BizError(ErrorCode.PARAM_INVALID)
+    comment = WorkitemComment(
+        tenant_id=workspace_id,
+        source_type="SCHEDULED_TASK_RUN",
+        workitem_id=run_id,
+        author_type="HUMAN",
+        author_ref=user_id,
+        content_md=content_md,
+    )
+    session.add(comment)
+    await session.flush()
+    user = await session.get(User, user_id)
+    display: str | None = "HUMAN"
+    if user is not None:
+        display = person_name(user.nickname, user.username)
+    notices = await _mentions(
+        session,
+        workspace_id,
+        run,
+        comment,
+        user_id,
+        explicit_target_agent_ids,
+        explicit_target_human_ids,
+        display,
+    )
+    await publish_comment(session, workspace_id, run_id, comment.id)
+    return _comment_view(comment), notices
+
+
 async def add_run_agent_comment(
     session: AsyncSession,
     workspace_id: int,
@@ -110,11 +172,12 @@ async def _mentions(
     creator_id: int,
     explicit_target_agent_ids: list[int],
     explicit_target_human_ids: list[int],
+    actor_display: str | None = None,
 ) -> list[RunMention]:
     agent_targets = _distinct(explicit_target_agent_ids)
     human_targets = _distinct(explicit_target_human_ids)
     title = await _run_title(session, workspace_id, run)
-    display = await _actor_display(session, creator_id)
+    display = await _actor_display(session, creator_id) if actor_display is None else actor_display
     if len(agent_targets) > 0:
         frozen = _frozen_agent_ids(run.execution_snapshot_json)
         for target_id in agent_targets:

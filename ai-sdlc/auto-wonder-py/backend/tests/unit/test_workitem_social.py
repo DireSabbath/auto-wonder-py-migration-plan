@@ -4,6 +4,7 @@ from datetime import datetime
 
 from autowonder.agents.models import Agent, AgentVersion
 from autowonder.core.errors import BizError, ErrorCode
+from autowonder.core.result import dump_data
 from autowonder.dispatch.enqueue import enqueue_comment_interaction, enqueue_workitem
 from autowonder.dispatch.models import Dispatch, DispatchRecoveryCheckpoint
 from autowonder.guidance.mentions import (
@@ -31,10 +32,10 @@ from tests.unit.test_workitems import MemorySession
 
 _NOW = datetime(2026, 9, 24, 8, 0, 0)
 _AONE_MENTION = (
-    "<article class=\"4ever-article\"><p><span data-type=\"text\"></span>"
-    "<span data-type=\"mention\" data-login=\"WORKER_1783582374386\">"
+    '<article class="4ever-article"><p><span data-type="text"></span>'
+    '<span data-type="mention" data-login="WORKER_1783582374386">'
     "@Terraform-PD数字人(WORKER_1783582374386)</span>"
-    "<span data-type=\"text\">看下截图报告为什么降级</span></p></article>"
+    '<span data-type="text">看下截图报告为什么降级</span></p></article>'
 )
 
 
@@ -165,14 +166,11 @@ def test_mention_names_follow_guidance_patterns() -> None:
     """富文本 mention 去掉 worker 后缀，纯文本 @ 认汉字右边界。"""
     assert mention_names(_AONE_MENTION) == ["Terraform-PD数字人"]
     spaced = (
-        "<article><p><span data-type=\"text\">"
-        "@Terraform-PD数字人&nbsp;看一下</span></p></article>"
+        '<article><p><span data-type="text">@Terraform-PD数字人&nbsp;看一下</span></p></article>'
     )
     assert mention_names(spaced) == ["Terraform-PD数字人"]
     assert text_mention_index("请@Terraform-PD数字人处理一下", "Terraform-PD数字人") == 1
-    html_only = (
-        "<span data-type=\"mention\">@AW全栈开发(WORKER_1)</span>"
-    )
+    html_only = '<span data-type="mention">@AW全栈开发(WORKER_1)</span>'
     assert mention_comparable_content(html_only) == "@AW全栈开发"
     assert mention_comparable_content("@AW全栈开发 在吗") == "@AW全栈开发 在吗"
 
@@ -182,6 +180,13 @@ def test_participant_json_uses_is_agent() -> None:
     body = ParticipantView(user_id=4, name="构建员", agent=True).model_dump(by_alias=True)
     assert body["isAgent"] is True
     assert body["userId"] == 4
+
+
+def test_timeline_item_json_uses_agent() -> None:
+    """统一时间线没有 @JsonGetter，Jackson 把 boolean isAgent 写成 agent。"""
+    body = dump_data(TimelineItemView(type="comment", agent=True))
+    assert body["agent"] is True
+    assert "isAgent" not in body
 
 
 async def test_follow_is_idempotent_and_hides_inactive_members() -> None:
@@ -323,9 +328,7 @@ async def test_running_worker_forks_side_interaction() -> None:
     await session.flush()
     await create_for_comment(session, 100, 50, 600, "@AW全栈开发 在吗", [40013], 7)
     created = [
-        row
-        for row in _rows(session, Dispatch)
-        if isinstance(row, Dispatch) and row.id != 91
+        row for row in _rows(session, Dispatch) if isinstance(row, Dispatch) and row.id != 91
     ]
     assert len(created) == 1
     assert isinstance(created[0], Dispatch)

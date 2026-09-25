@@ -60,7 +60,7 @@ def test_squad_card_json_names() -> None:
     assert created["sdlcs"] is None
     assert created["executors"] is None
     stamp = dump_data(datetime(2026, 9, 23, 8, 0, 0))
-    assert isinstance(stamp, int)
+    assert stamp == "2026-09-23T00:00:00.000+00:00"
 
 
 def test_template_tags_steps_and_system_flag() -> None:

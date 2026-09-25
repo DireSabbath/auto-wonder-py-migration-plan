@@ -19,6 +19,42 @@ class WorkitemOriginView(ApiModel):
     scheduled_task_name: str | None = None
 
 
+class ExternalPrincipalView(ApiModel):
+    """来源侧身份。展示名可以空。"""
+
+    id: int
+    provider: str
+    subject_id: str
+    display_name: str | None = None
+
+
+class ExternalPrincipalRelationView(ApiModel):
+    """一组已经解析成主体的来源参与关系。"""
+
+    source_key: str | None = None
+    display_name: str | None = None
+    principals: list[ExternalPrincipalView] = Field(default_factory=list)
+
+
+class ExternalCollaborationView(ApiModel):
+    """工单详情上的外部协作快照。"""
+
+    provider: str
+    external_project_id: str
+    external_workitem_id: str
+    external_url: str | None = None
+    source_status_id: str | None = None
+    source_status_name: str | None = None
+    source_lifecycle: str | None = None
+    reporter: ExternalPrincipalView | None = None
+    business_owner: ExternalPrincipalView | None = None
+    principal_relations: list[ExternalPrincipalRelationView] = Field(default_factory=list)
+    last_sync_at: datetime | None = None
+    sync_status: str | None = None
+    last_error_code: str | None = None
+    last_error: str | None = None
+
+
 class WorkitemView(ApiModel):
     """工单卡片。时间为上海本地钟，序列化成毫秒。"""
 
@@ -52,8 +88,8 @@ class WorkitemView(ApiModel):
     deletable: bool | None = None
     deletable_reason: str | None = None
     origin: WorkitemOriginView | None = None
-    external_collaboration: None = None
-    source_creator: None = None
+    external_collaboration: ExternalCollaborationView | None = None
+    source_creator: ExternalPrincipalView | None = None
     scheduled_start_at: datetime | None = None
     scheduled_start_triggered_at: datetime | None = None
     scheduled_phase: str | None = None
@@ -163,7 +199,8 @@ class TimelineItemView(ApiModel):
     author_id: int | None = None
     author_name: str | None = None
     author_type: str | None = None
-    agent: bool = Field(default=False, serialization_alias="isAgent")
+    # Lombok 对 boolean isAgent 生成 isAgent()，Jackson 去掉 is 前缀，键名是 agent。
+    agent: bool = False
     content: str | None = None
     gmt_create: datetime | None = None
     source_provider: str | None = None

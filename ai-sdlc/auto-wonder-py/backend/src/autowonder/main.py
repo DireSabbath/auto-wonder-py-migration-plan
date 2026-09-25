@@ -7,8 +7,10 @@ from fastapi import FastAPI
 from autowonder import __version__
 from autowonder.agents.platform_router import agent_status_router, intelligence_router
 from autowonder.agents.router import router as agent_router
+from autowonder.ai.router import router as ai_session_router
 from autowonder.aiusage.daemon_router import router as daemon_usage_router
 from autowonder.aiusage.router import router as ai_usage_router
+from autowonder.api.binding import install_binding_before_access
 from autowonder.api.errors import install_exception_handlers
 from autowonder.api.meta import router as meta_router
 from autowonder.api.middleware import AuthMiddleware
@@ -22,6 +24,12 @@ from autowonder.backups.router import router as backup_router
 from autowonder.categories.router import router as category_router
 from autowonder.clarifications.router import router as clarification_router
 from autowonder.config import get_settings
+from autowonder.conversations.router import (
+    clarification_router as conversation_clarification_router,
+)
+from autowonder.conversations.router import (
+    platform_router as platform_conversation_router,
+)
 from autowonder.core.logging import configure_logging
 from autowonder.dashboards.router import router as dashboard_router
 from autowonder.debuglogs.router import router as debug_log_router
@@ -32,11 +40,22 @@ from autowonder.dispatch.router import trace_router
 from autowonder.environments.router import router as environment_router
 from autowonder.evolution.router import router as evolution_router
 from autowonder.executors.daemon_router import router as daemon_executor_router
+from autowonder.executors.router import router as executor_router
 from autowonder.executors.runtime_router import router as runtime_auto_update_router
 from autowonder.im.router import channel_router, identity_router
 from autowonder.insights.router import member_router as member_delivery_router
 from autowonder.insights.router import router as insight_router
+from autowonder.integrations.dingtalk_bindings import router as dingtalk_binding_router
+from autowonder.integrations.extra_router import (
+    aone_router,
+    import_router,
+    receipt_router,
+    sync_router,
+)
+from autowonder.integrations.feishu_bindings import callback_router as feishu_callback_router
+from autowonder.integrations.feishu_bindings import router as feishu_binding_router
 from autowonder.integrations.router import router as integration_router
+from autowonder.mcp.protocol import router as mcp_protocol_router
 from autowonder.mcp.router import router as mcp_token_router
 from autowonder.memories.router import router as memory_router
 from autowonder.notifications.router import router as notification_router
@@ -45,6 +64,7 @@ from autowonder.platform.router import router as branding_router
 from autowonder.repos.router import router as repo_router
 from autowonder.scheduledtasks.router import router as scheduled_capability_router
 from autowonder.scheduledtasks.router import task_router as scheduled_task_router
+from autowonder.scheduledtasks.runs import router as scheduled_run_router
 from autowonder.sdlcs.router import router as sdlc_router
 from autowonder.settings.router import router as setting_router
 from autowonder.skills.router import router as skill_router
@@ -55,6 +75,8 @@ from autowonder.users.router import router as user_router
 from autowonder.workitems.daemon_router import router as daemon_comment_router
 from autowonder.workitems.router import router as workitem_router
 from autowonder.workspaces.router import router as workspace_router
+from autowonder.ws.browser import router as browser_ws_router
+from autowonder.ws.executor import router as executor_ws_router
 
 
 def create_app() -> FastAPI:
@@ -62,6 +84,7 @@ def create_app() -> FastAPI:
     import autowonder.model_imports  # noqa: F401
 
     configure_logging()
+    install_binding_before_access()
     app = FastAPI(title="auto-wonder", version=__version__)
     app.add_middleware(AuthMiddleware)
     install_exception_handlers(app)
@@ -72,10 +95,24 @@ def create_app() -> FastAPI:
     app.include_router(platform_admin_router)
     app.include_router(runtime_auto_update_router)
     app.include_router(integration_router)
+    app.include_router(aone_router)
+    app.include_router(dingtalk_binding_router)
+    app.include_router(feishu_binding_router)
+    app.include_router(feishu_callback_router)
+    app.include_router(receipt_router)
+    app.include_router(import_router)
+    app.include_router(sync_router)
     app.include_router(identity_router)
     app.include_router(channel_router)
     app.include_router(scheduled_capability_router)
     app.include_router(scheduled_task_router)
+    app.include_router(scheduled_run_router)
+    app.include_router(ai_session_router)
+    app.include_router(executor_router)
+    app.include_router(platform_conversation_router)
+    app.include_router(conversation_clarification_router)
+    app.include_router(executor_ws_router)
+    app.include_router(browser_ws_router)
     app.include_router(agent_router)
     app.include_router(agent_status_router)
     app.include_router(intelligence_router)
@@ -92,7 +129,9 @@ def create_app() -> FastAPI:
     app.include_router(clarification_router)
     app.include_router(workitem_router)
     app.include_router(memory_router)
+    # 固定路径 /api/mcp/tokens 必须先于 /{pathToken}，否则 tokens 会被当成路径令牌。
     app.include_router(mcp_token_router)
+    app.include_router(mcp_protocol_router)
     app.include_router(notification_router)
     app.include_router(dashboard_router)
     app.include_router(audit_router)
@@ -118,6 +157,15 @@ def create_app() -> FastAPI:
     return app
 
 
+def serving_app() -> FastAPI:
+    """生产应用：在 ``create_app`` 上挂定时任务生命周期。测试用的应用工厂不启动调度器。"""
+    from autowonder.jobs.scheduler import scheduler_lifespan
+
+    app = create_app()
+    app.router.lifespan_context = scheduler_lifespan
+    return app
+
+
 def serve() -> None:
     """生产入口：先做一次性管理员迁移，再监听配置中的 HTTP 端口。"""
     import asyncio
@@ -134,7 +182,7 @@ def serve() -> None:
     asyncio.run(_boot())
     settings = get_settings()
     uvicorn.run(
-        "autowonder.main:create_app",
+        serving_app,
         factory=True,
         host="0.0.0.0",
         port=settings.http_port,

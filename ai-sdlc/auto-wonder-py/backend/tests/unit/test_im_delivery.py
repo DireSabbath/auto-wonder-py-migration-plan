@@ -64,9 +64,7 @@ class _Sender:
     ) -> None:
         if self.error is not None:
             raise self.error
-        self.calls.append(
-            (app_key, app_secret, base_url, robot_code, user_ids, markdown, now_ms)
-        )
+        self.calls.append((app_key, app_secret, base_url, robot_code, user_ids, markdown, now_ms))
 
 
 def _ready_config() -> PlatformImChannelConfig:

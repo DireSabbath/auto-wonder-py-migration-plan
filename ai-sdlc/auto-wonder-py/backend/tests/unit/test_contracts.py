@@ -109,6 +109,85 @@ def test_auth_whitelist_matches_filter_rules() -> None:
     assert not is_login_only_request("GET", "/api/workitems")
 
 
+def test_status_taobao_follows_the_java_marker(tmp_path, monkeypatch) -> None:
+    from autowonder.api import meta
+
+    marker = tmp_path / "status.taobao"
+    monkeypatch.setattr(meta, "STATUS_MARKER", marker)
+    client = TestClient(create_app())
+    missing = client.get("/status.taobao")
+    assert missing.status_code == 404
+    assert missing.text == (
+        "HealthCheckController can not found META-INF/resources/status.taobao, "
+        "please check app status.; server maybe in rebooting..."
+    )
+    marker.write_text("ok", encoding="utf-8")
+    ready = client.get("/status.taobao")
+    assert ready.status_code == 200
+    assert ready.text == "success"
+
+
+def test_missing_json_body_uses_the_java_param_envelope() -> None:
+    client = TestClient(create_app())
+    missing = client.post("/api/auth/login")
+    assert missing.status_code == 400
+    assert missing.json()["code"] == "10001"
+    assert missing.json()["message"] == "参数不合法"
+    assert missing.json()["data"] is None
+    broken = client.post(
+        "/api/auth/login",
+        content=b"{",
+        headers={"content-type": "application/json"},
+    )
+    assert broken.status_code == 400
+    assert broken.json()["code"] == "10001"
+    form = client.post("/api/daemon/dispatches/1/checkpoint")
+    assert form.status_code == 200
+    assert form.json()["code"] == "10000"
+    assert form.json()["message"] == "系统内部错误"
+    usage = client.post("/api/daemon/tasks/1/usage")
+    assert usage.status_code == 400
+    assert usage.json()["code"] == "10001"
+
+
+def test_argument_binding_precedes_workspace_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """登录但没有工作空间时，缺参先于 11001，未映射的 Aone 控制器是 404。"""
+    monkeypatch.setenv("AUTOWONDER_JWT_SECRET", "autowonder-dev-jwt-secret-32-bytes")
+    get_settings.cache_clear()
+    token = sign_access(TokenPayload(user_id=42, workspace_id=None, jti="binding-order"))
+    headers = {"Authorization": "Bearer " + token}
+    with TestClient(create_app()) as client:
+        _assert_binding_order(client, headers)
+
+
+def _assert_binding_order(client: TestClient, headers: dict[str, str]) -> None:
+    missing_body = client.post("/api/agents", headers=headers)
+    assert missing_body.status_code == 400
+    assert missing_body.json()["code"] == "10001"
+    category = client.post("/api/categories", headers=headers)
+    assert category.status_code == 400
+    assert category.json()["code"] == "10001"
+    proposal = client.post("/api/evolution/proposals", headers=headers)
+    assert proposal.status_code == 400
+    assert proposal.json()["code"] == "10001"
+    missing_query = client.get("/api/debug-logs", headers=headers)
+    assert missing_query.status_code == 200
+    assert missing_query.json()["code"] == "10000"
+    listed = client.get("/api/agents", headers=headers)
+    assert listed.status_code == 403
+    assert listed.json()["code"] == "11001"
+    setting = client.put("/api/users/me/settings/theme", headers=headers)
+    assert setting.status_code == 400
+    assert setting.json()["code"] == "10001"
+    missing_controller = client.get("/api/integrations/aone/bindings", headers=headers)
+    assert missing_controller.status_code == 404
+    body = missing_controller.json()
+    assert body["status"] == 404
+    assert body["error"] == "Not Found"
+    assert body["path"] == "/api/integrations/aone/bindings"
+    assert body["timestamp"].endswith("+00:00")
+
+
 def test_hello_envelope() -> None:
     client = TestClient(create_app())
     response = client.get("/api/hello")
@@ -136,4 +215,14 @@ def test_endpoint_catalog_contains_auth_login() -> None:
         (BACKEND / "verify" / "parity" / "cases" / "endpoints.yaml").read_text(encoding="utf-8")
     )
     assert {"method": "POST", "path": "/api/auth/login", "controller": "AuthController"} in catalog
+    assert {
+        "method": "GET",
+        "path": "/checkpreload.htm",
+        "controller": "HealthCheckController",
+    } in catalog
+    assert {
+        "method": "GET",
+        "path": "/status.taobao",
+        "controller": "HealthCheckController",
+    } in catalog
     assert len(catalog) == 375

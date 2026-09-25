@@ -265,7 +265,7 @@ def _contains(value: str | None, normalized: str) -> bool:
 def _mention_boundary(char: str) -> bool:
     if java_is_whitespace(ord(char)):
         return True
-    return char in ",.;:!?)]}\uFF0C\u3002\uFF1B\uFF1A\uFF01\uFF1F\uFF09\u3011\u300D"
+    return char in ",.;:!?)]}\uff0c\u3002\uff1b\uff1a\uff01\uff1f\uff09\u3011\u300d"
 
 
 async def _live(session: AsyncSession, workitem_id: int) -> Workitem | None:
@@ -280,9 +280,7 @@ async def _user(session: AsyncSession, user_id: int) -> User | None:
     )
 
 
-async def _dispatches(
-    session: AsyncSession, tenant_id: int, workitem_id: int
-) -> list[Dispatch]:
+async def _dispatches(session: AsyncSession, tenant_id: int, workitem_id: int) -> list[Dispatch]:
     result = await session.scalars(
         select(Dispatch).where(
             Dispatch.tenant_id == tenant_id,

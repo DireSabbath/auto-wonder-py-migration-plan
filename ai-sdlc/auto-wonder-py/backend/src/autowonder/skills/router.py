@@ -14,6 +14,7 @@ from autowonder.core.context import current_user_id, current_workspace_id
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.result import fail_omitting_nulls, ok
 from autowonder.db.session import get_session
+from autowonder.skills.connection import test_connection
 from autowonder.skills.package import (
     FORMAT_TAR_GZ,
     create_from_package,
@@ -170,6 +171,19 @@ async def create_package(
 async def get(id: int, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """技能详情。"""
     return ok(await get_skill(session, id))
+
+
+@router.post(
+    "/{id}/connection-test",
+    dependencies=[Depends(require_access(WorkspaceAccessLevel.READ_WRITE, "测试技能连接"))],
+)
+async def connection_test(
+    id: int,
+    executor_id: Annotated[int | None, Query(alias="executorId")] = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """测试 MCP 技能能否连上。结果在响应体里，失败不改技能。"""
+    return ok(await test_connection(session, id, _workspace_id(), executor_id))
 
 
 @router.put(

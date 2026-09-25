@@ -1118,8 +1118,8 @@
   path: /api/workspaces/{id}/switch
   controller: WorkspaceController
 - method: GET
-  path: /checkpreload.htm/checkpreload.htm
+  path: /checkpreload.htm
   controller: HealthCheckController
 - method: GET
-  path: /checkpreload.htm/status.taobao
+  path: /status.taobao
   controller: HealthCheckController

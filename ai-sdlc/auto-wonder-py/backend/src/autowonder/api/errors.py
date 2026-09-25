@@ -1,8 +1,16 @@
 """把业务异常写成 Result 信封，状态码对齐 ``GlobalExceptionHandler``。"""
 
+import inspect
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException
+from starlette.responses import Response
 
 from autowonder.api.access import access_denied_body
 from autowonder.core.errors import (
@@ -31,8 +39,80 @@ def _biz_status(code: str) -> int:
     return 200
 
 
+def _validation_response(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """缺正文与坏 JSON 是 400；字段校验带字段名；查询、表单和文件落到 10000。"""
+    errors = exc.errors()
+    if _body_unreadable(errors):
+        return JSONResponse(status_code=400, content=fail(ErrorCode.PARAM_INVALID))
+    if _non_body(errors) or _form_endpoint(request):
+        return JSONResponse(status_code=200, content=fail(ErrorCode.SYSTEM_ERROR))
+    field = _body_field(errors)
+    if field is not None:
+        return JSONResponse(
+            status_code=400,
+            content=fail(ErrorCode.PARAM_INVALID, field + " 参数不合法"),
+        )
+    return JSONResponse(status_code=200, content=fail(ErrorCode.SYSTEM_ERROR))
+
+
+def _body_unreadable(errors: Sequence[Mapping[str, object]]) -> bool:
+    for error in errors:
+        if error.get("type") == "json_invalid":
+            return True
+        if error.get("loc") == ("body",):
+            return True
+    return False
+
+
+def _non_body(errors: Sequence[Mapping[str, object]]) -> bool:
+    for error in errors:
+        loc = error.get("loc")
+        if isinstance(loc, tuple) and loc and loc[0] in {"query", "header", "path", "cookie"}:
+            return True
+    return False
+
+
+def _body_field(errors: Sequence[Mapping[str, object]]) -> str | None:
+    for error in errors:
+        loc = error.get("loc")
+        if isinstance(loc, tuple) and len(loc) >= 2 and loc[0] == "body":
+            return str(loc[1])
+    return None
+
+
+def _form_endpoint(request: Request) -> bool:
+    endpoint = request.scope.get("endpoint")
+    if endpoint is None:
+        return False
+    for param in inspect.signature(endpoint).parameters.values():
+        rendered = repr(param.annotation)
+        if "UploadFile" in rendered or "Form(" in rendered or "File(" in rendered:
+            return True
+    return False
+
+
+def _spring_not_found(request: Request) -> JSONResponse:
+    """没有控制器时的 Spring Boot 默认 404。时间戳带毫秒和偏移。"""
+    stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
+    return JSONResponse(
+        status_code=404,
+        content={
+            "timestamp": stamp,
+            "status": 404,
+            "error": "Not Found",
+            "path": request.url.path,
+        },
+    )
+
+
 def install_exception_handlers(app: FastAPI) -> None:
     """注册与 Java advice 相同的异常到 HTTP 映射。"""
+
+    @app.exception_handler(HTTPException)
+    async def handle_http(request: Request, exc: HTTPException) -> Response:
+        if exc.status_code == 404 and request.url.path.startswith("/api"):
+            return _spring_not_found(request)
+        return await http_exception_handler(request, exc)
 
     @app.exception_handler(IllegalArgumentError)
     async def handle_illegal(_request: Request, exc: IllegalArgumentError) -> JSONResponse:
@@ -58,6 +138,10 @@ def install_exception_handlers(app: FastAPI) -> None:
                 access_denied_body(exc),
             ),
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return _validation_response(request, exc)
 
     @app.exception_handler(IntegrityError)
     async def handle_integrity(_request: Request, _exc: IntegrityError) -> JSONResponse:

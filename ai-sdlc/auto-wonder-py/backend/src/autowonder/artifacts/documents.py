@@ -859,17 +859,10 @@ def _has_image_signature(content_type: str, payload: bytes) -> bool:
         )
     if content_type == "image/jpeg":
         return (
-            len(payload) >= 3
-            and payload[0] == 0xFF
-            and payload[1] == 0xD8
-            and payload[2] == 0xFF
+            len(payload) >= 3 and payload[0] == 0xFF and payload[1] == 0xD8 and payload[2] == 0xFF
         )
     if content_type == "image/webp":
-        return (
-            len(payload) >= 12
-            and payload[0:4] == b"RIFF"
-            and payload[8:12] == b"WEBP"
-        )
+        return len(payload) >= 12 and payload[0:4] == b"RIFF" and payload[8:12] == b"WEBP"
     return False
 
 

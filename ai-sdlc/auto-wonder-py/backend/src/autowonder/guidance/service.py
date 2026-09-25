@@ -18,6 +18,7 @@ from autowonder.dispatch.enqueue import (
     list_workitem_dispatches,
 )
 from autowonder.dispatch.models import Dispatch
+from autowonder.dispatch.pending import remember_pending
 from autowonder.guidance.mentions import (
     html_text,
     mention_comparable_content,
@@ -166,6 +167,7 @@ async def _create(
         logger.info(
             "guidance dispatch queued workspaceId=%s dispatchId=%s", workspace_id, formal.id
         )
+        remember_pending(session, formal.id)
         return guidance
     fork = False
     if prior is not None and prior.status in ACTIVE_TURN_STATUSES:
@@ -193,6 +195,7 @@ async def _create(
     logger.info(
         "guidance dispatch queued workspaceId=%s dispatchId=%s", workspace_id, interaction.id
     )
+    remember_pending(session, interaction.id)
     return guidance
 
 

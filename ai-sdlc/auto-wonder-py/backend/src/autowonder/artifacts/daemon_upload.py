@@ -68,10 +68,13 @@ class UploadHooks:
     ingest_evolution: Callable[[int, int, int, bytes, str], Awaitable[None]]
     notify_scheduled: Callable[[int, int], Awaitable[None]] | None = None
     relay_target: Callable[[int, int], Awaitable[RelayTarget | None]] | None = None
-    record_relay: Callable[
-        [int, int, str, int, int, dict[str, Any] | None],
-        Awaitable[None],
-    ] | None = None
+    record_relay: (
+        Callable[
+            [int, int, str, int, int, dict[str, Any] | None],
+            Awaitable[None],
+        ]
+        | None
+    ) = None
     scheduled_task_id: Callable[[int, int], Awaitable[int | None]] | None = None
 
 

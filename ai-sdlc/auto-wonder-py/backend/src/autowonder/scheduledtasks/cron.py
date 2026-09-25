@@ -352,7 +352,9 @@ def _weekday_nearest(day_of_month: int, temporal: datetime, zone: ZoneInfo) -> d
     return None
 
 
-def _day_of_week_in_month(ordinal: int, dow_value: int, temporal: datetime, zone: ZoneInfo) -> datetime:
+def _day_of_week_in_month(
+    ordinal: int, dow_value: int, temporal: datetime, zone: ZoneInfo
+) -> datetime:
     if ordinal >= 0:
         cursor = with_field(temporal, zone, "day", 1)
         diff = (dow_value - cursor.isoweekday() + 7) % 7
@@ -406,7 +408,9 @@ class QuartzCronField:
                 result = last
             return _rollback_midnight(temporal, result, zone)
         if self.mode == "last-offset":
-            last = with_field(temporal, zone, "day", calendar.monthrange(temporal.year, temporal.month)[1])
+            last = with_field(
+                temporal, zone, "day", calendar.monthrange(temporal.year, temporal.month)[1]
+            )
             result = add_days(last, zone, self.arg)
             return _rollback_midnight(temporal, result, zone)
         if self.mode == "nearest":

@@ -1,8 +1,13 @@
-"""验证命令：smoke 检查正在运行的 Python 服务。"""
+"""验收命令入口。"""
 
 import argparse
 import json
+from pathlib import Path
 from urllib.request import urlopen
+
+from verify.authchain import authchain
+from verify.dispatch_e2e import dispatch_e2e
+from verify.logscan import logscan
 
 
 def smoke(base_url: str) -> dict[str, object]:
@@ -21,9 +26,71 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="verify")
     parser.add_argument("command")
     parser.add_argument("--base-url", default="http://127.0.0.1:7002")
+    parser.add_argument("--app-log", default="")
+    parser.add_argument("--file-log", default="")
+    parser.add_argument("--bodies", default="")
+    parser.add_argument("--app-start-line", type=int, default=0)
+    parser.add_argument("--file-start-line", type=int, default=0)
+    parser.add_argument("--java-url", default="http://127.0.0.1:7001")
     args = parser.parse_args(argv)
     if args.command == "smoke":
         verdict = smoke(args.base_url)
+    elif args.command == "authchain":
+        verdict = authchain(args.base_url, _bodies(args.bodies))
+    elif args.command == "logscan":
+        verdict = logscan(
+            Path(args.app_log),
+            _bodies(args.bodies),
+            _optional_path(args.file_log),
+            args.app_start_line,
+            args.file_start_line,
+        )
+    elif args.command == "dispatch-e2e":
+        verdict = dispatch_e2e(args.base_url)
+    elif args.command == "pages":
+        from verify.pages import pages
+
+        verdict = pages(args.base_url)
+    elif args.command == "squad-flow":
+        from verify.squad_flow import squad_flow
+
+        verdict = squad_flow(args.base_url)
+    elif args.command == "squad-dual":
+        from verify.squad_dual import squad_dual
+
+        verdict = squad_dual(args.base_url, args.java_url)
+    elif args.command == "mcp":
+        from verify.mcp_flow import mcp_flow
+
+        verdict = mcp_flow(args.base_url)
+    elif args.command == "cli-scenes":
+        from verify.cli_scenes import cli_scenes
+
+        verdict = cli_scenes(args.base_url)
+    elif args.command == "cli-dual":
+        from verify.cli_dual import cli_dual
+
+        verdict = cli_dual(args.base_url, args.java_url)
+    elif args.command == "outbox":
+        from verify.outbox_flow import outbox_flow
+
+        verdict = outbox_flow(args.base_url)
+    elif args.command == "outbox-dual":
+        from verify.outbox_dual import outbox_dual
+
+        verdict = outbox_dual(args.base_url, args.java_url)
+    elif args.command == "presign":
+        from verify.presign_flow import presign_flow
+
+        verdict = presign_flow(args.base_url)
+    elif args.command == "parity":
+        from verify.parity import parity
+
+        verdict = parity(args.base_url, args.java_url)
+    elif args.command == "jobs-dual":
+        from verify.jobs_dual import jobs_dual
+
+        verdict = jobs_dual()
     else:
         verdict = {
             "command": args.command,
@@ -34,3 +101,17 @@ def main(argv: list[str] | None = None) -> int:
     if verdict["ok"] is True:
         return 0
     return 1
+
+
+def _bodies(path: str) -> Path | None:
+    if path == "":
+        return None
+    directory = Path(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _optional_path(path: str) -> Path | None:
+    if path == "":
+        return None
+    return Path(path)
