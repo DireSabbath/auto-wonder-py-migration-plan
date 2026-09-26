@@ -295,19 +295,18 @@ async def _human(
         previous_type,
         "HUMAN",
     )
+    notice = None
     if event.id is not None:
-        publish_human_assigned(
-            WorkitemHumanAssigned(
-                tenant_id,
-                workitem_id,
-                title,
-                event.id,
-                resolved,
-                actor.type,
-                actor.ref,
-                actor.display_name,
-                request_id_or_none(),
-            )
+        notice = WorkitemHumanAssigned(
+            tenant_id,
+            workitem_id,
+            title,
+            event.id,
+            resolved,
+            actor.type,
+            actor.ref,
+            actor.display_name,
+            request_id_or_none(),
         )
     logger.info(
         "handoff to HUMAN workitemId=%s target=%s resolvedUserId=%s",
@@ -316,6 +315,8 @@ async def _human(
         resolved,
     )
     await session.commit()
+    if notice is not None:
+        await publish_human_assigned(session, notice)
     return human_result(resolved, fallback_reason)
 
 

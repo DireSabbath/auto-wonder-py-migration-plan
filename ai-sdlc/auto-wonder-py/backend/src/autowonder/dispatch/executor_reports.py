@@ -98,7 +98,19 @@ async def on_pause_failed(
     dispatch = await _owned(session, tenant_id, executor_id, dispatch_id)
     if dispatch is None or dispatch.status != "PAUSING":
         return False
-    return await _move(session, dispatch, "PAUSE_FAILED", error)
+    moved = await _move(session, dispatch, "PAUSE_FAILED", error)
+    if moved and dispatch.source_type == "SCHEDULED_TASK_RUN":
+        from autowonder.scheduledtasks.notify import announce_run
+
+        await announce_run(
+            session,
+            tenant_id,
+            dispatch.workitem_id,
+            "NEEDS_HUMAN",
+            0,
+            error,
+        )
+    return moved
 
 
 async def _finish_scheduled_cancel(session: AsyncSession, dispatch: Dispatch) -> None:

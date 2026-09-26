@@ -307,13 +307,15 @@ def _stream_key(binding_id: int) -> str:
 
 
 async def _start_stream(row: DingtalkRobotBinding) -> None:
-    await _write_stream(row.id, "CONNECTING", None)
-    await _write_stream(row.id, "FAILED", "DingTalk Stream client is not embedded")
-    raise RuntimeError("DingTalk Stream client is not embedded")
+    from autowonder.integrations.dingtalk.stream import ensure_started
+
+    await ensure_started(row, _write_stream)
 
 
 async def _stop_stream(row: DingtalkRobotBinding) -> None:
-    await _write_stream(row.id, "NOT_CONNECTED", None)
+    from autowonder.integrations.dingtalk.stream import ensure_stopped
+
+    await ensure_stopped(row, _write_stream)
 
 
 async def _view(session: AsyncSession, row: DingtalkRobotBinding) -> BindingView:

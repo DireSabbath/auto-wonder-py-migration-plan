@@ -1,5 +1,6 @@
 """定时任务运行的状态变更、评论、参与者和交付进度。"""
 
+import logging
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -55,6 +56,8 @@ from autowonder.workitems.schemas import (
 )
 from autowonder.workitems.service import get_workitem
 from autowonder.workspaces.models import OrgMember
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELED", "SKIPPED"})
 _NON_FROZEN = "不在本次运行的冻结快照中，无法 @ 触发执行"
@@ -163,6 +166,20 @@ async def transition_run(
     if _terminal(target):
         run.finished_at = now_local()
     await _audit(session, run, user_id, target)
+    from autowonder.scheduledtasks.notify import announce_run, notify_owner, publish_status
+
+    if notify_owner(target, user_id, run.owner_id):
+        await session.commit()
+        await announce_run(session, workspace_id, run_id, target, user_id, None)
+    elif target == "PAUSED":
+        try:
+            await publish_status(session, workspace_id, run_id)
+        except Exception:
+            logger.exception(
+                "scheduled status frame failed workspaceId=%s runId=%s",
+                workspace_id,
+                run_id,
+            )
     return run
 
 
@@ -316,8 +333,12 @@ async def complete_from_dispatch(
     if run is None or _terminal(run.status):
         return
     target = "SUCCEEDED" if success else "FAILED"
-    await _finish(session, run, target, summary, error, 0)
+    finished = await _finish(session, run, target, summary, error, 0)
     await session.commit()
+    if finished and target in {"FAILED", "TIMED_OUT"}:
+        from autowonder.scheduledtasks.notify import announce_run
+
+        await announce_run(session, dispatch.tenant_id, run.id, target, 0, error)
 
 
 async def _require_run(session: AsyncSession, workspace_id: int, run_id: int) -> ScheduledTaskRun:

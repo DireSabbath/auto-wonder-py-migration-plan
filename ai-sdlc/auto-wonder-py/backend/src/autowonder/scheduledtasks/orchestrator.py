@@ -432,43 +432,51 @@ async def _pause_task(workspace_id: int, task_id: int, actor_id: int) -> None:
         task = await session.get(ScheduledTask, task_id)
         if task is None or task.workspace_id != workspace_id or task.version is None:
             return
-        await session.execute(
-            update(ScheduledTask)
-            .where(
-                ScheduledTask.workspace_id == workspace_id,
-                ScheduledTask.id == task_id,
-                ScheduledTask.status == task.status,
-                ScheduledTask.version == task.version,
-                ScheduledTask.is_deleted == 0,
-            )
-            .values(
-                status="PAUSED",
-                modifier_id=actor_id,
-                version=ScheduledTask.version + 1,
+        applied = rowcount(
+            await session.execute(
+                update(ScheduledTask)
+                .where(
+                    ScheduledTask.workspace_id == workspace_id,
+                    ScheduledTask.id == task_id,
+                    ScheduledTask.status == task.status,
+                    ScheduledTask.version == task.version,
+                    ScheduledTask.is_deleted == 0,
+                )
+                .values(
+                    status="PAUSED",
+                    modifier_id=actor_id,
+                    version=ScheduledTask.version + 1,
+                )
             )
         )
         await session.commit()
+        if applied == 1:
+            from autowonder.scheduledtasks.notify import announce_task_paused
+
+            await announce_task_paused(session, workspace_id, task_id)
 
 
 async def _fail(session: AsyncSession, run: ScheduledTaskRun, actor_id: int, error: str) -> None:
     current = await _load(session, run.workspace_id, run.id)
     if current is None or current.status in _TERMINAL or current.version is None:
         return
-    await session.execute(
-        update(ScheduledTaskRun)
-        .where(
-            ScheduledTaskRun.workspace_id == current.workspace_id,
-            ScheduledTaskRun.id == current.id,
-            ScheduledTaskRun.status == current.status,
-            ScheduledTaskRun.version == current.version,
-            ScheduledTaskRun.status.not_in(_TERMINAL),
-        )
-        .values(
-            status="FAILED",
-            error=error[:1024],
-            finished_at=now_local(),
-            modifier_id=actor_id,
-            version=ScheduledTaskRun.version + 1,
+    applied = rowcount(
+        await session.execute(
+            update(ScheduledTaskRun)
+            .where(
+                ScheduledTaskRun.workspace_id == current.workspace_id,
+                ScheduledTaskRun.id == current.id,
+                ScheduledTaskRun.status == current.status,
+                ScheduledTaskRun.version == current.version,
+                ScheduledTaskRun.status.not_in(_TERMINAL),
+            )
+            .values(
+                status="FAILED",
+                error=error[:1024],
+                finished_at=now_local(),
+                modifier_id=actor_id,
+                version=ScheduledTaskRun.version + 1,
+            )
         )
     )
     await session.commit()
@@ -478,6 +486,10 @@ async def _fail(session: AsyncSession, run: ScheduledTaskRun, actor_id: int, err
         run.id,
         error,
     )
+    if applied == 1:
+        from autowonder.scheduledtasks.notify import announce_run
+
+        await announce_run(session, current.workspace_id, current.id, "FAILED", actor_id, error)
 
 
 async def handoff_scheduled(
