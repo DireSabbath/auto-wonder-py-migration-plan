@@ -8,11 +8,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.expression import delete
 
+from autowonder.config import get_settings
 from autowonder.core.errors import BizError, ErrorCode
 from autowonder.core.redis import redis_client
 from autowonder.db.rows import rowcount
 from autowonder.im.models import PlatformImChannelConfig, UserImIdentity
-from autowonder.im.providers import require_selected, selected_provider
+from autowonder.im.providers import ImSendCommand, require_selected, selected_provider
 from autowonder.notifications.models import Notification, NotifyPref
 from autowonder.notifications.schemas import (
     NotificationPage,
@@ -26,12 +27,6 @@ from autowonder.settings.service import get_decrypted_value
 logger = logging.getLogger(__name__)
 
 _LIST_CAP = 100
-_SKIP_IM = {
-    "WORKITEM_ASSIGNED",
-    "COMMENT_MENTION",
-    "WORKSPACE_ACCESS_REQUEST",
-    "WORKSPACE_ACCESS_REVIEWED",
-}
 MISSING_NOTIFICATION = "通知不存在"
 
 
@@ -342,16 +337,39 @@ async def _send(session: AsyncSession, row: Notification, channel_name: str) -> 
     return await deliver_platform_im(session, row)
 
 
-async def deliver_platform_im(session: AsyncSession, row: Notification) -> bool:
-    """已有独立 IM 队列的事件直接算成功。其余要等渠道就绪和身份。
+def notification_markdown(
+    title: str | None,
+    content: str | None,
+    link: str | None,
+    public_base_url: str,
+) -> str:
+    """钉钉 markdown 和飞书富文本共用的正文。"""
+    heading = ""
+    if title is not None:
+        heading = title
+    lines = ["## " + heading]
+    if content is not None and content.strip() != "":
+        lines.append(content)
+    absolute = absolute_notice_link(link, public_base_url)
+    if absolute is not None:
+        lines.append(absolute)
+    return "\n\n".join(lines)
 
-    真正的钉钉、飞书 HTTP 发送还没接入，就绪后的发送目前记为失败。
-    """
-    event_type = row.type
-    if event_type is None:
-        event_type = ""
-    if event_type in _SKIP_IM:
-        return True
+
+def absolute_notice_link(link: str | None, public_base_url: str) -> str | None:
+    """站内路径拼上对外根地址。已经是绝对地址时保持原样。"""
+    if link is None or link.strip() == "":
+        return None
+    if link.startswith("http://") or link.startswith("https://"):
+        return link
+    base = public_base_url.rstrip("/")
+    if link.startswith("/"):
+        return base + link
+    return base + "/" + link
+
+
+async def deliver_platform_im(session: AsyncSession, row: Notification) -> bool:
+    """渠道、工作空间开关和外部身份都就绪时，按当前平台发送钉钉或飞书。"""
     provider = await selected_provider(session)
     if not await _im_ready(session, provider):
         return False
@@ -374,8 +392,27 @@ async def deliver_platform_im(session: AsyncSession, row: Notification) -> bool:
     )
     if identity is None or identity.external_user_id.strip() == "":
         return False
-    logger.warning("platform IM send is not wired provider=%s notification=%s", provider, row.id)
-    return False
+    from autowonder.im.router import provider_registry
+
+    markdown = notification_markdown(
+        row.title,
+        row.content,
+        row.link,
+        get_settings().public_base_url,
+    )
+    await (
+        provider_registry(session)
+        .require(provider)
+        .send(
+            ImSendCommand(
+                provider=provider,
+                external_user_id=identity.external_user_id,
+                title=row.title,
+                markdown=markdown,
+            )
+        )
+    )
+    return True
 
 
 async def _im_ready(session: AsyncSession, provider: str) -> bool:

@@ -73,6 +73,11 @@ def _registry(session: AsyncSession) -> ImProviderRegistry:
     )
 
 
+def provider_registry(session: AsyncSession) -> ImProviderRegistry:
+    """当前请求可用的钉钉、飞书发送实现。"""
+    return _registry(session)
+
+
 @identity_router.get("")
 async def list_my_identities(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """当前选中渠道上的个人身份。"""

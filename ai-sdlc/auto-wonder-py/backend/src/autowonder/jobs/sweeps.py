@@ -339,7 +339,7 @@ async def dingtalk_stream_reconcile() -> None:
 
 
 async def external_operation_recovery() -> None:
-    """接管超时的发送中回执。没有回读实现时标成 UNKNOWN。"""
+    """接管超时的发送中回执。Aone 评论按标记确认，其余标成 UNKNOWN。"""
     before = now_local() - timedelta(seconds=30)
     async with SessionLocal() as session:
         rows = list(
@@ -378,6 +378,10 @@ async def external_operation_recovery() -> None:
             )
             if rowcount(taken) != 1:
                 continue
+            status, last_error = await _confirm_receipt(session, receipt)
+            stored_error = None
+            if last_error is not None:
+                stored_error = sanitize_error(last_error)
             await session.execute(
                 update(IntegrationOutbox)
                 .where(
@@ -386,13 +390,32 @@ async def external_operation_recovery() -> None:
                     IntegrationOutbox.status.in_(("SENDING", "UNKNOWN")),
                 )
                 .values(
-                    status="UNKNOWN",
-                    last_error=sanitize_error(_READBACK_UNAVAILABLE),
+                    status=status,
+                    last_error=stored_error,
                     next_retry_at=None,
                     gmt_modified=now_local(),
                 )
             )
         await session.commit()
+
+
+async def _confirm_receipt(
+    session: AsyncSession,
+    receipt: IntegrationOutbox,
+) -> tuple[str, str | None]:
+    """Aone 评论按标记回读。没有回读实现时保持原来的不可用说明。"""
+    from autowonder.integrations.comment_readback import confirm_comment_readback
+
+    try:
+        return await confirm_comment_readback(
+            session,
+            receipt,
+            aone_enabled(),
+            _READBACK_UNAVAILABLE,
+        )
+    except Exception as error:
+        logger.warning("Aone comment readback failed receiptId=%s", receipt.id)
+        return "UNKNOWN", sanitize_error(str(error))
 
 
 async def human_agent_participation_snapshot() -> None:
@@ -972,10 +995,11 @@ async def _dispatch_sweep() -> None:
                     exc_info=True,
                 )
         pausing_cutoff = now - timedelta(minutes=2)
+        needs_human: list[tuple[int, int]] = []
         for row in loaded["pausing"]:
             try:
                 if row.status == "PAUSING":
-                    await session.execute(
+                    expired = await session.execute(
                         update(Dispatch)
                         .where(
                             Dispatch.id == row.id,
@@ -991,6 +1015,8 @@ async def _dispatch_sweep() -> None:
                             modifier_id=0,
                         )
                     )
+                    if rowcount(expired) == 1 and row.source_type == "SCHEDULED_TASK_RUN":
+                        needs_human.append((row.tenant_id, row.workitem_id))
             except Exception:
                 logger.warning(
                     "compensation pause-expire failed dispatchId=%s",
@@ -1003,6 +1029,10 @@ async def _dispatch_sweep() -> None:
             except Exception:
                 logger.warning("compensation timeout failed dispatchId=%s", row.id, exc_info=True)
         await session.commit()
+        from autowonder.scheduledtasks.notify import announce_run
+
+        for tenant_id, run_id in needs_human:
+            await announce_run(session, tenant_id, run_id, "NEEDS_HUMAN", 0, _PAUSE_TIMEOUT)
 
 
 async def _load_stuck(

@@ -563,6 +563,7 @@ async def assign_as(
                     modifier_user_id,
                 ),
             )
+    human_notice = None
     if (
         assignee_type == "HUMAN"
         and assignee_ref is not None
@@ -570,20 +571,20 @@ async def assign_as(
         and assign_event.id is not None
         and not (effective.is_human() and effective.ref == assignee_ref)
     ):
-        publish_human_assigned(
-            WorkitemHumanAssigned(
-                tenant_id,
-                workitem_id,
-                reloaded.title,
-                assign_event.id,
-                assignee_ref,
-                effective.type,
-                effective.ref,
-                effective.display_name,
-                request_id_or_none(),
-            )
+        human_notice = WorkitemHumanAssigned(
+            tenant_id,
+            workitem_id,
+            reloaded.title,
+            assign_event.id,
+            assignee_ref,
+            effective.type,
+            effective.ref,
+            effective.display_name,
+            request_id_or_none(),
         )
     await session.commit()
+    if human_notice is not None:
+        await publish_human_assigned(session, human_notice)
     await drive_queued(queued_dispatch)
     return await _detail(session, workitem_id)
 

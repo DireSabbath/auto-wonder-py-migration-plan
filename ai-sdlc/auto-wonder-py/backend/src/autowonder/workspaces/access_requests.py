@@ -13,8 +13,9 @@ from autowonder.core.page import PageResult
 from autowonder.db.rows import rowcount
 from autowonder.platform.service import is_system_admin
 from autowonder.users.models import User
+from autowonder.workitems.view import person_name
 from autowonder.workspaces.identity_tags import normalize
-from autowonder.workspaces.models import Org, WorkspaceAccessRequest
+from autowonder.workspaces.models import Org, OrgMember, WorkspaceAccessRequest
 from autowonder.workspaces.schemas import AccessRequestView, WorkspaceListItem
 from autowonder.workspaces.service import (
     _duplicate_key,
@@ -140,6 +141,7 @@ async def submit_request(
             raise BizError(ErrorCode.WORKSPACE_ACCESS_REQUEST_DUPLICATE) from error
         raise
     await session.commit()
+    await _notify_submitted(session, workspace, requester_id)
 
 
 async def list_for_workspace(
@@ -212,6 +214,7 @@ async def approve(
             reviewer_id,
         )
     await session.commit()
+    await _notify_reviewed(session, workspace_id, request.requester_id, reviewer_id, True, None)
 
 
 async def reject(
@@ -222,11 +225,19 @@ async def reject(
     reason: str | None,
 ) -> None:
     """拒绝申请，并保存原因。"""
-    await _require_pending(session, workspace_id, request_id)
+    request = await _require_pending(session, workspace_id, request_id)
     updated = await _update_status(session, request_id, STATUS_REJECTED, reviewer_id, reason)
     if updated == 0:
         raise BizError(ErrorCode.WORKSPACE_ACCESS_REQUEST_NOT_FOUND)
     await session.commit()
+    await _notify_reviewed(
+        session,
+        workspace_id,
+        request.requester_id,
+        reviewer_id,
+        False,
+        reason,
+    )
 
 
 async def cancel_request(
@@ -260,6 +271,128 @@ async def cancel_request(
         request_id,
         operator_id,
     )
+
+
+def access_request_content(requester_name: str, workspace_name: str) -> str:
+    """加入申请发给审核人的摘要。"""
+    return requester_name + " 申请加入「" + workspace_name + "」"
+
+
+def access_review_content(
+    reviewer_name: str,
+    workspace_name: str,
+    approved: bool,
+    reason: str | None,
+) -> str:
+    """审核结果发给申请人的摘要。"""
+    action = "已通过"
+    if not approved:
+        action = "已拒绝"
+    text = reviewer_name + action + "你加入「" + workspace_name + "」的申请"
+    if reason is not None and reason.strip() != "":
+        clipped = reason.strip()
+        if len(clipped) > 180:
+            clipped = clipped[:180]
+        text = text + "：" + clipped
+    if len(text) > 1024:
+        return text[:1024]
+    return text
+
+
+async def _notify_submitted(
+    session: AsyncSession,
+    workspace: Org,
+    requester_id: int,
+) -> None:
+    from autowonder.notifications.service import publish
+
+    try:
+        await publish(
+            session,
+            workspace.id,
+            "WORKSPACE_ACCESS_REQUEST",
+            "有人申请加入工作空间",
+            access_request_content(await _display_name(session, requester_id), workspace.name),
+            "/settings/members",
+            "WORKSPACE",
+            workspace.id,
+            await _reviewer_ids(session, workspace),
+        )
+    except Exception:
+        logger.exception(
+            "failed to notify workspace access request tenantId=%s requesterId=%s",
+            workspace.id,
+            requester_id,
+        )
+        await session.rollback()
+
+
+async def _notify_reviewed(
+    session: AsyncSession,
+    workspace_id: int,
+    requester_id: int,
+    reviewer_id: int,
+    approved: bool,
+    reason: str | None,
+) -> None:
+    from autowonder.notifications.service import publish
+
+    title = "加入申请已通过"
+    if not approved:
+        title = "加入申请已拒绝"
+    try:
+        workspace = await session.get(Org, workspace_id)
+        if workspace is None:
+            raise RuntimeError("workspace disappeared before access review notice")
+        await publish(
+            session,
+            workspace_id,
+            "WORKSPACE_ACCESS_REVIEWED",
+            title,
+            access_review_content(
+                await _display_name(session, reviewer_id),
+                workspace.name,
+                approved,
+                reason,
+            ),
+            "/workspaces",
+            "WORKSPACE",
+            workspace_id,
+            [requester_id],
+        )
+    except Exception:
+        logger.exception(
+            "failed to notify workspace access review tenantId=%s requesterId=%s",
+            workspace_id,
+            requester_id,
+        )
+        await session.rollback()
+
+
+async def _reviewer_ids(session: AsyncSession, workspace: Org) -> list[int]:
+    ids = [workspace.owner_id]
+    admins = await session.scalars(
+        select(OrgMember.user_id).where(
+            OrgMember.tenant_id == workspace.id,
+            OrgMember.status == 0,
+            OrgMember.is_deleted == 0,
+            OrgMember.access_level == "ADMIN",
+        )
+    )
+    for user_id in admins:
+        if user_id not in ids:
+            ids.append(user_id)
+    return ids
+
+
+async def _display_name(session: AsyncSession, user_id: int) -> str:
+    user = await session.get(User, user_id)
+    if user is None:
+        return str(user_id)
+    name = person_name(user.nickname, user.username)
+    if name is None or name.strip() == "":
+        return str(user_id)
+    return name
 
 
 def _parse_requested_level(requested_level: str | None) -> WorkspaceAccessLevel:

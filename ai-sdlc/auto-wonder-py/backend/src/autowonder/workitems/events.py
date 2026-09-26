@@ -3,6 +3,8 @@
 import logging
 from dataclasses import dataclass
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from autowonder.core.context import current_request_id
 from autowonder.debuglogs.sanitizer import java_is_blank
 
@@ -23,7 +25,7 @@ class WorkitemAssigned:
 
 @dataclass(frozen=True)
 class WorkitemHumanAssigned:
-    """指派给另一位真人。IM 通知随渠道迁移。"""
+    """指派给另一位真人。站内通知和当前 IM 一起发出。"""
 
     tenant_id: int
     workitem_id: int
@@ -58,13 +60,37 @@ class WorkitemContentUpdated:
     user_id: int
 
 
-def publish_human_assigned(event: WorkitemHumanAssigned) -> None:
-    """真人指派通知。发送动作随 IM 迁移，事件本身在这里交出。"""
+async def publish_human_assigned(
+    session: AsyncSession,
+    event: WorkitemHumanAssigned,
+) -> None:
+    """给被指派的真人发站内通知，并按偏好发当前 IM。"""
+    from autowonder.notifications.service import publish
+
     logger.info(
         "workitem human assigned workitemId=%s recipient=%s",
         event.workitem_id,
         event.recipient_user_id,
     )
+    try:
+        await publish(
+            session,
+            event.tenant_id,
+            "WORKITEM_ASSIGNED",
+            "工单已指派给你",
+            event.actor_display_name + " 将「" + event.workitem_title + "」指派给了你",
+            "/workitems/" + str(event.workitem_id),
+            "WORKITEM",
+            event.workitem_id,
+            [event.recipient_user_id],
+        )
+    except Exception:
+        logger.exception(
+            "failed to notify workitem assignment workitemId=%s recipient=%s",
+            event.workitem_id,
+            event.recipient_user_id,
+        )
+        await session.rollback()
 
 
 def publish_status_changed(event: WorkitemStatusChanged) -> None:

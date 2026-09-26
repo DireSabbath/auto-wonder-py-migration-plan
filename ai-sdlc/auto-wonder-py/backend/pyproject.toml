@@ -21,6 +21,7 @@ dependencies = [
     "redis>=5.2,<5.3",
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "uvicorn[standard]>=0.32,<0.33",
+    "websockets>=13",
 ]
 
 [project.scripts]
